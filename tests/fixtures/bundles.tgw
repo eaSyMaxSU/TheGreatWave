@@ -1,0 +1,16 @@
+clk:       p..Pp..P
+@group Master
+  @group ctrl
+    write: 01.0....
+    read:  0...1..0
+  @end
+  addr:    x3.x4..x => A1 A2
+  wdata:   x3.x.... => D1
+@end
+---
+@group Slave
+  @group ctrl
+    ack:   x01x0.1x
+  @end
+  rdata:   x.....4x => Q2
+@end

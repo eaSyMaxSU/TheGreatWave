@@ -1,0 +1,17 @@
+@title Fractional timing · cropped window
+@tick 0
+@footer Native curves, complete arrows, aligned data
+@foot-tock 0
+@bounds 1 9
+
+clock:          P........... ; phase=0.125
+delayed:        n.......... ; phase=-0.25
+@group Transfer
+  "data [7:0]": x3.4.5.6.x.. => 0xA5 payload 0x3C done ; phase=0.25
+  valid:        0.1....0.... ; node=..A....B....
+  subcycle:     0.<1010>1...0....
+@end
+---
+analog:         path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 A0.5,0.5 0 0 1 4,1 L5,0 L8,0
+
+@edge A<->B transfer

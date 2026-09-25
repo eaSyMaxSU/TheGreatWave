@@ -1,0 +1,12 @@
+Reset:  01|...=...|01u => "a < b" ; node=...........E...
+---
+Input:  x0|.1x....|.0d ; node=....A.F.......
+---
+Output: 0.|......1|0.d ; node=.........C.F..
+" ": ; node=....B....D.....
+
+@edge A-B
+@edge C-D
+@edge A~>C
+@edge B<->D T > 45s
+@edge E->F

@@ -1,0 +1,15 @@
+A: 01........0.... ; node=.a........j
+B: 0.1.......0.1.. ; node=..b.......i
+C: 0..1....0...1.. ; node=...c....h..
+D: 0...1..0.....1. ; node=....d..g...
+E: 0....10.......1 ; node=.....ef....
+
+@edge a~b t1
+@edge c-~a t2
+@edge c-~>d time 3
+@edge d~-e
+@edge e~>f
+@edge f->g
+@edge g-~>h
+@edge h~>i some text
+@edge h~->j

@@ -67,7 +67,12 @@ impl Default for Cap {
 #[derive(Clone, Debug)]
 pub(crate) enum Tick {
     Off,
-    Series { offset: f64, step: f64, dp: usize, fixed: bool },
+    Series {
+        offset: f64,
+        step: f64,
+        dp: usize,
+        fixed: bool,
+    },
     Labels(Vec<String>),
 }
 
@@ -80,11 +85,16 @@ enum Node {
 struct P<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
-    let mut p = P { s: source.as_bytes(), i: 0 };
-    p.ws();
+    let mut p = P {
+        s: source.as_bytes(),
+        i: 0,
+        depth: 0,
+    };
+    p.ws()?;
     if p.peek() != Some(b'{') {
         return Err(p.err("expected an object"));
     }
@@ -103,22 +113,14 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
     };
     let mut signal: Option<Vec<Node>> = None;
     p.i += 1;
+    p.enter()?;
+    let mut first = true;
     loop {
-        p.ws();
-        if p.peek() == Some(b'}') {
-            p.i += 1;
+        if !p.item(b'}', &mut first)? {
             break;
         }
-        if p.peek() == Some(b',') {
-            p.i += 1;
-            p.ws();
-            if p.peek() == Some(b'}') {
-                p.i += 1;
-                break;
-            }
-        }
         let key = p.key()?;
-        p.ws();
+        p.ws()?;
         if p.peek() != Some(b':') {
             return Err(p.err("expected ':'"));
         }
@@ -130,7 +132,7 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
             "foot" => doc.foot = p.cap()?,
             "config" => p.config(&mut doc)?,
             "gaps" => {
-                p.ws();
+                p.ws()?;
                 if matches!(p.peek(), Some(b'"' | b'\'')) {
                     doc.gaps = Some(p.string()?);
                 } else {
@@ -140,7 +142,7 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
             _ => p.skip()?,
         }
     }
-    p.ws();
+    p.ws()?;
     if p.i < p.s.len() {
         return Err(p.err("trailing input"));
     }
@@ -148,8 +150,15 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
         offset: 0,
         message: "signal array is required".to_string(),
     })?;
-    let mut st = Walk { x: 0, y: 0, xx: 0, name: None, lanes: Vec::new(), groups: Vec::new() };
-    walk(&nodes, &mut st);
+    let mut st = Walk {
+        x: 0,
+        y: 0,
+        xx: 0,
+        name: None,
+        lanes: Vec::new(),
+        groups: Vec::new(),
+    };
+    walk(nodes, &mut st);
     doc.lanes = st.lanes;
     doc.groups = st.groups;
     let dx = doc.xmin as f64 / 2.0;
@@ -164,7 +173,10 @@ fn shift_tick(tick: &mut Tick, dx: f64) {
     if dx == 0.0 {
         return;
     }
-    if let Tick::Series { offset, step, dp, .. } = tick {
+    if let Tick::Series {
+        offset, step, dp, ..
+    } = tick
+    {
         if (*step - 1.0).abs() < 1e-9 && *dp == 0 {
             *offset += dx;
         }
@@ -180,7 +192,7 @@ struct Walk {
     groups: Vec<Group>,
 }
 
-fn walk(nodes: &[Node], st: &mut Walk) {
+fn walk(nodes: Vec<Node>, st: &mut Walk) {
     let mut delta = 10i64;
     let mut name = None;
     if let Some(Node::Name(n)) = nodes.first() {
@@ -200,8 +212,7 @@ fn walk(nodes: &[Node], st: &mut Walk) {
                     name: st.name.clone(),
                 });
             }
-            Node::Lane(l) => {
-                let mut lane = l.clone();
+            Node::Lane(mut lane) => {
                 lane.indent = st.x;
                 st.lanes.push(lane);
                 st.y += 1;
@@ -220,10 +231,45 @@ impl<'a> P<'a> {
     }
 
     fn err(&self, message: &str) -> Error {
-        Error { offset: self.i, message: message.to_string() }
+        Error {
+            offset: self.i,
+            message: message.to_string(),
+        }
     }
 
-    fn ws(&mut self) {
+    fn enter(&mut self) -> Result<(), Error> {
+        // Bound both parser recursion and the later recursive group walk/drop.
+        if self.depth >= 128 {
+            return Err(self.err("nesting exceeds 128 levels"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
+    fn item(&mut self, end: u8, first: &mut bool) -> Result<bool, Error> {
+        self.ws()?;
+        if self.peek() == Some(end) {
+            self.i += 1;
+            self.depth -= 1;
+            return Ok(false);
+        }
+        if !*first {
+            if self.peek() != Some(b',') {
+                return Err(self.err("expected ',' or closing delimiter"));
+            }
+            self.i += 1;
+            self.ws()?;
+            if self.peek() == Some(end) {
+                self.i += 1;
+                self.depth -= 1;
+                return Ok(false);
+            }
+        }
+        *first = false;
+        Ok(true)
+    }
+
+    fn ws(&mut self) -> Result<(), Error> {
         loop {
             match self.peek() {
                 Some(b' ' | b'\t' | b'\n' | b'\r') => self.i += 1,
@@ -243,17 +289,19 @@ impl<'a> P<'a> {
                     {
                         self.i += 1;
                     }
-                    if self.i + 1 < self.s.len() {
-                        self.i += 2;
+                    if self.i + 1 >= self.s.len() {
+                        return Err(self.err("unterminated block comment"));
                     }
+                    self.i += 2;
                 }
                 _ => break,
             }
         }
+        Ok(())
     }
 
     fn key(&mut self) -> Result<String, Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'"' | b'\'') => self.string(),
             Some(c) if c.is_ascii_alphabetic() || c == b'_' || c == b'$' => self.ident(),
@@ -264,7 +312,8 @@ impl<'a> P<'a> {
     fn ident(&mut self) -> Result<String, Error> {
         let start = self.i;
         self.i += 1;
-        while matches!(self.peek(), Some(c) if c.is_ascii_alphanumeric() || c == b'_' || c == b'$') {
+        while matches!(self.peek(), Some(c) if c.is_ascii_alphanumeric() || c == b'_' || c == b'$')
+        {
             self.i += 1;
         }
         Ok(String::from_utf8_lossy(&self.s[start..self.i]).into_owned())
@@ -277,7 +326,16 @@ impl<'a> P<'a> {
         }
         self.i += 1;
         let mut out = String::new();
-        while let Some(c) = self.peek() {
+        loop {
+            // Copy whole UTF-8 spans. Most waveform strings contain no escapes.
+            let start = self.i;
+            while matches!(self.peek(), Some(c) if c != quote && c != b'\\' && c >= 0x20) {
+                self.i += 1;
+            }
+            out.push_str(
+                std::str::from_utf8(&self.s[start..self.i]).map_err(|_| self.err("bad utf-8"))?,
+            );
+            let c = self.peek().ok_or_else(|| self.err("unterminated string"))?;
             self.i += 1;
             if c == quote {
                 return Ok(out);
@@ -293,39 +351,58 @@ impl<'a> P<'a> {
                     b'r' => out.push('\r'),
                     b't' => out.push('\t'),
                     b'u' => {
-                        if self.i + 4 > self.s.len() {
-                            return Err(self.err("bad unicode escape"));
+                        let mut code = self.hex_escape(4)?;
+                        if (0xd800..=0xdbff).contains(&code) {
+                            if !self.s[self.i..].starts_with(b"\\u") {
+                                return Err(self.err("expected a low unicode surrogate"));
+                            }
+                            self.i += 2;
+                            let low = self.hex_escape(4)?;
+                            if !(0xdc00..=0xdfff).contains(&low) {
+                                return Err(self.err("expected a low unicode surrogate"));
+                            }
+                            code = 0x10000 + ((code - 0xd800) << 10) + low - 0xdc00;
                         }
-                        let hex = std::str::from_utf8(&self.s[self.i..self.i + 4])
-                            .map_err(|_| self.err("bad unicode escape"))?;
-                        let code = u32::from_str_radix(hex, 16)
-                            .map_err(|_| self.err("bad unicode escape"))?;
-                        out.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
-                        self.i += 4;
+                        out.push(
+                            char::from_u32(code)
+                                .ok_or_else(|| self.err("unpaired unicode surrogate"))?,
+                        );
+                    }
+                    b'x' => out.push(char::from_u32(self.hex_escape(2)?).unwrap()),
+                    b'v' => out.push('\u{000b}'),
+                    b'0' if !matches!(self.peek(), Some(b'0'..=b'9')) => out.push('\0'),
+                    b'\n' => {}
+                    b'\r' => {
+                        if self.peek() == Some(b'\n') {
+                            self.i += 1;
+                        }
                     }
                     _ => return Err(self.err("bad escape")),
                 }
             } else {
-                // UTF-8 sequence starting at the byte we already consumed.
-                let start = self.i - 1;
-                let width = utf8_width(c);
-                if width == 1 {
-                    out.push(c as char);
-                } else {
-                    if start + width > self.s.len() {
-                        return Err(self.err("bad utf-8"));
-                    }
-                    let text = std::str::from_utf8(&self.s[start..start + width])
-                        .map_err(|_| self.err("bad utf-8"))?;
-                    out.push_str(text);
-                    self.i = start + width;
-                }
+                return Err(self.err("unescaped control character in string"));
             }
         }
-        Err(self.err("unterminated string"))
+    }
+
+    fn hex_escape(&mut self, width: usize) -> Result<u32, Error> {
+        let bytes = self
+            .s
+            .get(self.i..self.i + width)
+            .ok_or_else(|| self.err("bad unicode escape"))?;
+        let mut code = 0;
+        for &byte in bytes {
+            let digit = (byte as char)
+                .to_digit(16)
+                .ok_or_else(|| self.err("bad unicode escape"))?;
+            code = code * 16 + digit;
+        }
+        self.i += width;
+        Ok(code)
     }
 
     fn number(&mut self) -> Result<f64, Error> {
+        self.ws()?;
         let start = self.i;
         if matches!(self.peek(), Some(b'+' | b'-')) {
             self.i += 1;
@@ -368,7 +445,11 @@ impl<'a> P<'a> {
             return Err(self.err("expected a number"));
         }
         let text = std::str::from_utf8(&self.s[start..self.i]).unwrap_or("");
-        text.parse::<f64>().map_err(|_| self.err("bad number"))
+        let n = text.parse::<f64>().map_err(|_| self.err("bad number"))?;
+        if !n.is_finite() {
+            return Err(self.err("number must be finite"));
+        }
+        Ok(n)
     }
 
     fn boolean(&mut self) -> Result<bool, Error> {
@@ -384,26 +465,18 @@ impl<'a> P<'a> {
     }
 
     fn skip(&mut self) -> Result<(), Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'{') => {
                 self.i += 1;
+                self.enter()?;
+                let mut first = true;
                 loop {
-                    self.ws();
-                    if self.peek() == Some(b'}') {
-                        self.i += 1;
+                    if !self.item(b'}', &mut first)? {
                         return Ok(());
                     }
-                    if self.peek() == Some(b',') {
-                        self.i += 1;
-                        self.ws();
-                        if self.peek() == Some(b'}') {
-                            self.i += 1;
-                            return Ok(());
-                        }
-                    }
                     let _ = self.key()?;
-                    self.ws();
+                    self.ws()?;
                     if self.peek() != Some(b':') {
                         return Err(self.err("expected ':'"));
                     }
@@ -413,19 +486,11 @@ impl<'a> P<'a> {
             }
             Some(b'[') => {
                 self.i += 1;
+                self.enter()?;
+                let mut first = true;
                 loop {
-                    self.ws();
-                    if self.peek() == Some(b']') {
-                        self.i += 1;
+                    if !self.item(b']', &mut first)? {
                         return Ok(());
-                    }
-                    if self.peek() == Some(b',') {
-                        self.i += 1;
-                        self.ws();
-                        if self.peek() == Some(b']') {
-                            self.i += 1;
-                            return Ok(());
-                        }
                     }
                     self.skip()?;
                 }
@@ -455,7 +520,7 @@ impl<'a> P<'a> {
     }
 
     fn signal_array(&mut self) -> Result<Vec<Node>, Error> {
-        self.ws();
+        self.ws()?;
         if self.peek() != Some(b'[') {
             return Err(self.err("signal must be an array"));
         }
@@ -465,26 +530,18 @@ impl<'a> P<'a> {
     fn nodes(&mut self) -> Result<Vec<Node>, Error> {
         self.i += 1;
         let mut out = Vec::new();
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b']') {
-                self.i += 1;
+            if !self.item(b']', &mut first)? {
                 return Ok(out);
-            }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b']') {
-                    self.i += 1;
-                    return Ok(out);
-                }
             }
             out.push(self.node()?);
         }
     }
 
     fn node(&mut self) -> Result<Node, Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'[') => Ok(Node::Group(self.nodes()?)),
             Some(b'{') => Ok(Node::Lane(self.lane()?)),
@@ -505,22 +562,14 @@ impl<'a> P<'a> {
         self.i += 1;
         let mut lane = empty_lane();
         let mut named = false;
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b'}') {
-                self.i += 1;
+            if !self.item(b'}', &mut first)? {
                 break;
             }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.i += 1;
-                    break;
-                }
-            }
             let key = self.key()?;
-            self.ws();
+            self.ws()?;
             if self.peek() != Some(b':') {
                 return Err(self.err("expected ':'"));
             }
@@ -534,9 +583,20 @@ impl<'a> P<'a> {
                 "data" => lane.data = self.data()?,
                 "period" => {
                     let n = self.number()?;
+                    if n < 0.0 {
+                        return Err(self.err("period must be positive"));
+                    }
+                    if n > 1.0e15 {
+                        return Err(self.err("period is out of range"));
+                    }
                     lane.period = if n == 0.0 { 1.0 } else { n };
                 }
-                "phase" => lane.phase = self.number()?,
+                "phase" => {
+                    lane.phase = self.number()?;
+                    if lane.phase.abs() > 1.0e15 {
+                        return Err(self.err("phase is out of range"));
+                    }
+                }
                 "node" => lane.node = Some(self.scalar_string()?),
                 "over" => lane.over = Some(self.scalar_string()?),
                 "under" => lane.under = Some(self.scalar_string()?),
@@ -550,7 +610,7 @@ impl<'a> P<'a> {
     }
 
     fn body(&mut self) -> Result<Body, Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'"' | b'\'') => Ok(Body::Wave(self.string()?)),
             Some(b'[') => {
@@ -558,19 +618,11 @@ impl<'a> P<'a> {
                 let mut kind = String::new();
                 let mut path = None;
                 let mut seen = false;
+                self.enter()?;
+                let mut first = true;
                 loop {
-                    self.ws();
-                    if self.peek() == Some(b']') {
-                        self.i += 1;
+                    if !self.item(b']', &mut first)? {
                         break;
-                    }
-                    if self.peek() == Some(b',') {
-                        self.i += 1;
-                        self.ws();
-                        if self.peek() == Some(b']') {
-                            self.i += 1;
-                            break;
-                        }
                     }
                     if !seen && matches!(self.peek(), Some(b'"' | b'\'')) {
                         kind = self.string()?;
@@ -599,28 +651,20 @@ impl<'a> P<'a> {
     fn d_object(&mut self) -> Result<String, Error> {
         self.i += 1;
         let mut d = String::new();
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b'}') {
-                self.i += 1;
+            if !self.item(b'}', &mut first)? {
                 return Ok(d);
             }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.i += 1;
-                    return Ok(d);
-                }
-            }
             let key = self.key()?;
-            self.ws();
+            self.ws()?;
             if self.peek() != Some(b':') {
                 return Err(self.err("expected ':'"));
             }
             self.i += 1;
             if key == "d" {
-                self.ws();
+                self.ws()?;
                 if matches!(self.peek(), Some(b'"' | b'\'')) {
                     d = self.string()?;
                 } else {
@@ -633,25 +677,17 @@ impl<'a> P<'a> {
     }
 
     fn data(&mut self) -> Result<Vec<String>, Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'"' | b'\'') => Ok(split_ws(&self.string()?)),
             Some(b'[') => {
                 self.i += 1;
                 let mut out = Vec::new();
+                self.enter()?;
+                let mut first = true;
                 loop {
-                    self.ws();
-                    if self.peek() == Some(b']') {
-                        self.i += 1;
+                    if !self.item(b']', &mut first)? {
                         return Ok(out);
-                    }
-                    if self.peek() == Some(b',') {
-                        self.i += 1;
-                        self.ws();
-                        if self.peek() == Some(b']') {
-                            self.i += 1;
-                            return Ok(out);
-                        }
                     }
                     out.push(self.scalar_string()?);
                 }
@@ -668,10 +704,14 @@ impl<'a> P<'a> {
     }
 
     fn scalar_string(&mut self) -> Result<String, Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'"' | b'\'') => self.string(),
-            Some(b't') | Some(b'f') => Ok(if self.boolean()? { "true".into() } else { "false".into() }),
+            Some(b't') | Some(b'f') => Ok(if self.boolean()? {
+                "true".into()
+            } else {
+                "false".into()
+            }),
             Some(b'n') => {
                 self.skip()?;
                 Ok(String::new())
@@ -685,27 +725,19 @@ impl<'a> P<'a> {
     }
 
     fn string_array(&mut self) -> Result<Vec<String>, Error> {
-        self.ws();
+        self.ws()?;
         if self.peek() != Some(b'[') {
             return Err(self.err("expected an array"));
         }
         self.i += 1;
         let mut out = Vec::new();
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b']') {
-                self.i += 1;
+            if !self.item(b']', &mut first)? {
                 return Ok(out);
             }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b']') {
-                    self.i += 1;
-                    return Ok(out);
-                }
-            }
-            self.ws();
+            self.ws()?;
             if matches!(self.peek(), Some(b'"' | b'\'')) {
                 out.push(self.string()?);
             } else {
@@ -715,29 +747,21 @@ impl<'a> P<'a> {
     }
 
     fn cap(&mut self) -> Result<Cap, Error> {
-        self.ws();
+        self.ws()?;
         if self.peek() != Some(b'{') {
             self.skip()?;
             return Ok(Cap::default());
         }
         self.i += 1;
         let mut cap = Cap::default();
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b'}') {
-                self.i += 1;
+            if !self.item(b'}', &mut first)? {
                 return Ok(cap);
             }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.i += 1;
-                    return Ok(cap);
-                }
-            }
             let key = self.key()?;
-            self.ws();
+            self.ws()?;
             if self.peek() != Some(b':') {
                 return Err(self.err("expected ':'"));
             }
@@ -753,25 +777,17 @@ impl<'a> P<'a> {
     }
 
     fn tick(&mut self) -> Result<Tick, Error> {
-        self.ws();
+        self.ws()?;
         match self.peek() {
             Some(b'"' | b'\'') => Ok(tick_from_parts(&split_ws(&self.string()?))),
             Some(b'[') => {
                 self.i += 1;
                 let mut parts = Vec::new();
+                self.enter()?;
+                let mut first = true;
                 loop {
-                    self.ws();
-                    if self.peek() == Some(b']') {
-                        self.i += 1;
+                    if !self.item(b']', &mut first)? {
                         break;
-                    }
-                    if self.peek() == Some(b',') {
-                        self.i += 1;
-                        self.ws();
-                        if self.peek() == Some(b']') {
-                            self.i += 1;
-                            break;
-                        }
                     }
                     parts.push(self.scalar_string()?);
                 }
@@ -779,7 +795,12 @@ impl<'a> P<'a> {
             }
             Some(b't') | Some(b'f') => {
                 let v = if self.boolean()? { 1.0 } else { 0.0 };
-                Ok(Tick::Series { offset: v, step: 1.0, dp: 0, fixed: false })
+                Ok(Tick::Series {
+                    offset: v,
+                    step: 1.0,
+                    dp: 0,
+                    fixed: false,
+                })
             }
             Some(b'n') => {
                 self.skip()?;
@@ -787,34 +808,31 @@ impl<'a> P<'a> {
             }
             _ => {
                 let n = self.number()?;
-                Ok(Tick::Series { offset: n, step: 1.0, dp: 0, fixed: false })
+                Ok(Tick::Series {
+                    offset: n,
+                    step: 1.0,
+                    dp: 0,
+                    fixed: false,
+                })
             }
         }
     }
 
     fn config(&mut self, doc: &mut Doc) -> Result<(), Error> {
-        self.ws();
+        self.ws()?;
         if self.peek() != Some(b'{') {
             self.skip()?;
             return Ok(());
         }
         self.i += 1;
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b'}') {
-                self.i += 1;
+            if !self.item(b'}', &mut first)? {
                 return Ok(());
             }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b'}') {
-                    self.i += 1;
-                    return Ok(());
-                }
-            }
             let key = self.key()?;
-            self.ws();
+            self.ws()?;
             if self.peek() != Some(b':') {
                 return Err(self.err("expected ':'"));
             }
@@ -833,6 +851,9 @@ impl<'a> P<'a> {
                 "hbounds" => {
                     let pair = self.num_pair()?;
                     if let Some((a, b)) = pair {
+                        if a.abs() > 1.0e15 || b.abs() > 1.0e15 {
+                            return Err(self.err("horizontal bounds are out of range"));
+                        }
                         let lo = a.floor();
                         let hi = b.ceil();
                         if lo < hi {
@@ -842,49 +863,51 @@ impl<'a> P<'a> {
                     }
                 }
                 "marks" => {
-                    self.ws();
+                    self.ws()?;
                     if matches!(self.peek(), Some(b't' | b'f')) {
                         doc.marks = self.boolean()?;
                     } else {
                         self.skip()?;
                     }
                 }
-                "arcFontSize" => doc.arc_font = self.number()?,
+                "arcFontSize" => {
+                    doc.arc_font = self.number()?;
+                    if doc.arc_font <= 0.0 || doc.arc_font > 1.0e6 {
+                        return Err(self.err("arc font size must be between 0 and 1000000"));
+                    }
+                }
                 _ => self.skip()?,
             }
         }
     }
 
     fn num_pair(&mut self) -> Result<Option<(f64, f64)>, Error> {
-        self.ws();
+        self.ws()?;
         if self.peek() != Some(b'[') {
             self.skip()?;
             return Ok(None);
         }
         self.i += 1;
-        let mut nums = Vec::new();
+        let mut nums = [0.0; 2];
+        let mut count = 0;
+        self.enter()?;
+        let mut first = true;
         loop {
-            self.ws();
-            if self.peek() == Some(b']') {
-                self.i += 1;
+            if !self.item(b']', &mut first)? {
                 break;
             }
-            if self.peek() == Some(b',') {
-                self.i += 1;
-                self.ws();
-                if self.peek() == Some(b']') {
-                    self.i += 1;
-                    break;
-                }
-            }
-            self.ws();
+            self.ws()?;
             if matches!(self.peek(), Some(b'-' | b'+' | b'.' | b'0'..=b'9')) {
-                nums.push(self.number()?);
+                let n = self.number()?;
+                if count < nums.len() {
+                    nums[count] = n;
+                    count += 1;
+                }
             } else {
                 self.skip()?;
             }
         }
-        if nums.len() >= 2 {
+        if count == 2 {
             Ok(Some((nums[0], nums[1])))
         } else {
             Ok(None)
@@ -916,17 +939,41 @@ fn tick_from_parts(parts: &[String]) -> Tick {
     }
     if parts.len() == 1 {
         if let Ok(n) = parts[0].parse::<f64>() {
-            return Tick::Series { offset: n, step: 1.0, dp: 0, fixed: false };
+            if n.is_finite() {
+                return Tick::Series {
+                    offset: n,
+                    step: 1.0,
+                    dp: 0,
+                    fixed: false,
+                };
+            }
         }
         return Tick::Labels(parts.to_vec());
     }
     if parts.len() == 2 {
         if let (Ok(offset), Ok(step)) = (parts[0].parse::<f64>(), parts[1].parse::<f64>()) {
-            let dp = parts[1].split('.').nth(1).map(|s| s.len()).unwrap_or(0);
-            return Tick::Series { offset: step * offset, step, dp, fixed: true };
+            if offset.is_finite() && step.is_finite() && (offset * step).is_finite() {
+                let dp = decimal_places(&parts[1]);
+                return Tick::Series {
+                    offset: step * offset,
+                    step,
+                    dp,
+                    fixed: true,
+                };
+            }
         }
     }
     Tick::Labels(parts.to_vec())
+}
+
+fn decimal_places(s: &str) -> usize {
+    let (mantissa, exponent) = s.split_once(['e', 'E']).unwrap_or((s, "0"));
+    let fraction = mantissa.split_once('.').map_or(0, |(_, s)| s.len());
+    let exponent = exponent.parse::<i64>().unwrap_or(0);
+    // Extra precision does not add useful f64 digits and can allocate huge labels.
+    (fraction.min(i64::MAX as usize) as i64)
+        .saturating_sub(exponent)
+        .clamp(0, 15) as usize
 }
 
 fn num_name(n: f64) -> String {
@@ -946,16 +993,117 @@ fn num_name(n: f64) -> String {
     }
 }
 
-fn utf8_width(b: u8) -> usize {
-    if b < 0x80 {
-        1
-    } else if b & 0b1110_0000 == 0b1100_0000 {
-        2
-    } else if b & 0b1111_0000 == 0b1110_0000 {
-        3
-    } else if b & 0b1111_1000 == 0b1111_0000 {
-        4
-    } else {
-        1
+#[cfg(test)]
+mod tests {
+    use super::{parse, Body, Tick};
+
+    #[test]
+    fn numeric_fields_accept_whitespace_and_comments() {
+        let doc = parse(
+            r#"{
+            signal: [{name: 'clk', wave: 'p.', period: /* cycles */ 2, phase: -0.25}],
+            config: {hscale: 3, hbounds: [ -1, 5 ], arcFontSize: 12.5},
+            head: {tick: 0, every: 2},
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(doc.lanes[0].period, 2.0);
+        assert_eq!(doc.lanes[0].phase, -0.25);
+        assert_eq!((doc.hscale, doc.xmin, doc.xmax_cfg), (3, -2, 10));
+        assert_eq!(doc.arc_font, 12.5);
+        assert_eq!(doc.head.every, 2.0);
+    }
+
+    #[test]
+    fn strings_preserve_unicode_and_decode_surrogate_pairs() {
+        let doc = parse(r#"{signal:[{name:'时钟 \uD83C\uDF0A',wave:'01',data:['\x41\u03b1']}]}"#)
+            .unwrap();
+        assert_eq!(doc.lanes[0].name, "时钟 🌊");
+        assert_eq!(doc.lanes[0].data, ["Aα"]);
+        assert!(matches!(&doc.lanes[0].body, Body::Wave(wave) if wave == "01"));
+        for bad in [r"\uD800", r"\uDC00", r"\uD800\u0041", r"\uZZZZ"] {
+            assert!(parse(&format!("{{signal:[{{name:'{bad}'}}]}}")).is_err());
+        }
+        assert!(parse("{signal:[{name:'raw\nnewline'}]}").is_err());
+        let continued = parse("{signal:[{name:'line\\\r\ncontinued'}]}").unwrap();
+        assert_eq!(continued.lanes[0].name, "linecontinued");
+    }
+
+    #[test]
+    fn separators_are_required_in_all_collections() {
+        for bad in [
+            "{signal:[] config:{}}",
+            "{signal:[{} {}]}",
+            "{signal:[,{}]}",
+            "{signal:[{},,{}]}",
+            "{signal:[{name:'a' wave:'0'}]}",
+            "{signal:[],edge:['a' 'b']}",
+            "{signal:[],head:{tick:[0 1]}}",
+            "{signal:[],unknown:{a:true b:false}}",
+            "{signal:[],unknown:[truefalse]}",
+            "{signal:[],config:{hbounds:[0 1]}}",
+            "{signal:[{wave:['pw' {d:'M0,0'}]}]}",
+        ] {
+            assert!(parse(bad).is_err(), "accepted malformed source: {bad}");
+        }
+        assert!(parse("{signal:[{name:'a',},],config:{marks:true,},}").is_ok());
+    }
+
+    #[test]
+    fn malformed_comments_and_excessive_nesting_return_errors() {
+        for bad in ["{signal:[]} /*", "{signal:[]} /*/", "{/* no end"] {
+            assert!(parse(bad).unwrap_err().message.contains("comment"));
+        }
+        for prefix in ["{signal:", "{signal:[],unknown:"] {
+            let nested = format!("{prefix}{}{} }}", "[".repeat(200), "]".repeat(200));
+            assert!(parse(&nested).unwrap_err().message.contains("nesting"));
+        }
+        assert!(parse("{signal:[]} // trailing comment").is_ok());
+    }
+
+    #[test]
+    fn invalid_numeric_geometry_returns_errors() {
+        for bad in [
+            "{signal:[{period:1e999}]}",
+            "{signal:[{period:1e300,node:'a'}]}",
+            "{signal:[{period:-1}]}",
+            "{signal:[{phase:1e300}]}",
+            "{signal:[],config:{hbounds:[-1e300,1e300]}}",
+            "{signal:[],config:{arcFontSize:0}}",
+            "{signal:[],config:{arcFontSize:1e300}}",
+        ] {
+            assert!(parse(bad).is_err(), "accepted invalid geometry: {bad}");
+        }
+        assert_eq!(parse("{signal:[{period:0}]}").unwrap().lanes[0].period, 1.0);
+    }
+
+    #[test]
+    fn tick_precision_handles_exponents_and_is_bounded() {
+        let doc = parse("{signal:[],head:{tick:'0 1e-3'},foot:{tick:'NaN'}}").unwrap();
+        assert!(matches!(doc.head.tick, Tick::Series { dp: 3, step, .. } if step == 0.001));
+        assert!(matches!(doc.foot.tick, Tick::Labels(_)));
+        let source = format!("{{signal:[],head:{{tick:'0 0.{}1'}}}}", "0".repeat(1000));
+        assert!(matches!(
+            parse(&source).unwrap().head.tick,
+            Tick::Series { dp: 15, .. }
+        ));
+    }
+
+    #[test]
+    fn nested_groups_keep_names_extents_and_lane_order() {
+        let doc =
+            parse("{signal:[['outer',{name:'a'},['inner',{name:'b'}],{name:'c'}],{name:'d'}]}")
+                .unwrap();
+        assert_eq!(
+            doc.lanes
+                .iter()
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b", "c", "d"]
+        );
+        assert_eq!(doc.groups[0].name.as_deref(), Some("inner"));
+        assert_eq!((doc.groups[0].y, doc.groups[0].height), (1, 1));
+        assert_eq!(doc.groups[1].name.as_deref(), Some("outer"));
+        assert_eq!((doc.groups[1].y, doc.groups[1].height), (0, 3));
     }
 }

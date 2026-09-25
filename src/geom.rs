@@ -3,8 +3,9 @@
 use crate::w::push_i64;
 use crate::wave::{Code, Pat};
 use crate::{XS, YS};
+use std::collections::HashMap;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ClockKey {
     pub s0: Code,
     pub s1: Code,
@@ -13,15 +14,10 @@ pub(crate) struct ClockKey {
     pub extra: i64,
 }
 
-pub(crate) struct Clip {
-    pub x: i64,
-    pub w: i64,
-}
-
 pub(crate) struct Paint {
     pub body: Vec<u8>,
     pub clocks: Vec<ClockKey>,
-    pub clips: Vec<Clip>,
+    clock_ids: HashMap<ClockKey, usize>,
     pub hatch: bool,
 }
 
@@ -30,43 +26,71 @@ impl Paint {
         Self {
             body: Vec::new(),
             clocks: Vec::new(),
-            clips: Vec::new(),
+            clock_ids: HashMap::new(),
             hatch: false,
         }
     }
 }
 
-pub(crate) fn paint_wave(paint: &mut Paint, pats: &[Pat], skip: i64) {
+pub(crate) fn paint_wave(paint: &mut Paint, pats: &[Pat], skip: i64, end: i64) {
+    if end <= skip {
+        return;
+    }
+    paint.body.extend_from_slice(b"<g fill=\"none\" stroke=\"#000\" stroke-width=\"1\" stroke-linecap=\"round\" stroke-linejoin=\"round\">");
     for p in pats {
+        let at = match *p {
+            Pat::Fill { at, .. } | Pat::Lead { at, .. } | Pat::Clock { at, .. } => at,
+        };
+        if at >= end {
+            break;
+        }
         match *p {
             Pat::Fill { at, code, count } => {
                 let lo = at.max(skip);
-                let hi = at + count;
+                let hi = (at + count).min(end);
                 if lo >= hi {
                     continue;
                 }
                 draw_span(paint, code, (lo - skip) * XS, (hi - lo) * XS);
             }
-            Pat::Lead { at, lead, hold, holds } => {
+            Pat::Lead {
+                at,
+                lead,
+                hold,
+                holds,
+            } => {
                 if at >= skip {
                     draw_one(paint, lead, (at - skip) * XS);
                 }
                 if holds > 0 {
                     let start = at + 1;
                     let lo = start.max(skip);
-                    let hi = start + holds;
+                    let hi = (start + holds).min(end);
                     if lo < hi {
                         draw_span(paint, hold, (lo - skip) * XS, (hi - lo) * XS);
                     }
                 }
             }
-            Pat::Clock { at, s0, s1, s2, s3, extra, times } => {
-                draw_clock(paint, at, s0, s1, s2, s3, extra, times, skip);
+            Pat::Clock {
+                at,
+                s0,
+                s1,
+                s2,
+                s3,
+                extra,
+                times,
+            } => {
+                draw_clock(paint, at, s0, s1, s2, s3, extra, times, skip, end);
             }
         }
     }
+    paint.body.extend_from_slice(b"</g>");
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Destructured clock run plus the visible interval"
+)]
 fn draw_clock(
     paint: &mut Paint,
     at: i64,
@@ -77,44 +101,59 @@ fn draw_clock(
     extra: i64,
     times: i64,
     skip: i64,
+    end: i64,
 ) {
     let period = 2 * (extra + 1);
     let total = times * period;
-    let hi = at + total;
+    let hi = (at + total).min(end);
     let lo = at.max(skip);
     if lo >= hi || total <= 0 {
         return;
     }
-    let key = ClockKey { s0, s1, s2, s3, extra };
-    let id = if let Some(i) = paint.clocks.iter().position(|c| *c == key) {
-        i
-    } else {
+    let key = ClockKey {
+        s0,
+        s1,
+        s2,
+        s3,
+        extra,
+    };
+    let id = *paint.clock_ids.entry(key).or_insert_with(|| {
         paint.clocks.push(key);
         paint.clocks.len() - 1
-    };
+    });
     let x_start = (at - skip) * XS;
-    let total_w = total * XS;
-    let clipped = lo > at;
-    if clipped {
-        let vis_x = (lo - skip) * XS;
-        let vis_w = (hi - lo) * XS;
-        paint.clips.push(Clip { x: vis_x, w: vis_w });
-        let cid = paint.clips.len() - 1;
-        paint.body.extend_from_slice(b"<g clip-path=\"url(#c");
-        push_i64(&mut paint.body, cid as i64);
-        paint.body.extend_from_slice(b")\">");
+    let x_end = (hi - skip) * XS;
+
+    // Put tile seams on the flat part of the waveform, away from vertical
+    // edges and arrows. The two small caps prevent the rectangle from clipping
+    // the initial edge or painting an edge belonging to the *next* cycle.
+    const PAD: i64 = 4;
+    if at >= skip {
+        clock_edge(&mut paint.body, s0, x_start, x_start + PAD);
     }
+    let left = (x_start + PAD).max(0);
+    let complete = at + total <= end;
+    let right = if complete { x_end - PAD } else { x_end };
+    // Keep the pattern origin near the viewport even after skipping millions
+    // of cycles. This also avoids unnecessarily large renderer transforms.
+    let origin = if at < skip {
+        -((skip - at) % period) * XS
+    } else {
+        x_start
+    };
     paint.body.extend_from_slice(b"<g transform=\"translate(");
-    push_i64(&mut paint.body, x_start);
-    paint.body.extend_from_slice(b")\"><rect width=\"");
-    push_i64(&mut paint.body, total_w);
+    push_i64(&mut paint.body, origin);
+    paint.body.extend_from_slice(b")\"><rect x=\"");
+    push_i64(&mut paint.body, left - origin);
+    paint.body.extend_from_slice(b"\" y=\"-2\" width=\"");
+    push_i64(&mut paint.body, right - left);
     paint.body.extend_from_slice(b"\" height=\"");
-    push_i64(&mut paint.body, YS);
+    push_i64(&mut paint.body, YS + 4);
     paint.body.extend_from_slice(b"\" fill=\"url(#k");
     push_i64(&mut paint.body, id as i64);
-    paint.body.extend_from_slice(b")\"/></g>");
-    if clipped {
-        paint.body.extend_from_slice(b"</g>");
+    paint.body.extend_from_slice(b")\" stroke=\"none\"/></g>");
+    if complete {
+        draw_span(paint, s3, right, PAD);
     }
 }
 
@@ -129,13 +168,11 @@ fn draw_span(paint: &mut Paint, code: Code, x: i64, w: i64) {
         Code::X => {
             paint.hatch = true;
             rect(&mut paint.body, x, 0, w, YS, "url(#xh)", false);
-            hline(paint, x, w, 0, false);
-            hline(paint, x, w, YS, false);
+            rails(paint, x, w);
         }
         Code::Bus(n) => {
             rect(&mut paint.body, x, 0, w, YS, bus_fill(n), false);
-            hline(paint, x, w, 0, false);
-            hline(paint, x, w, YS, false);
+            rails(paint, x, w);
         }
         other => draw_one(paint, other, x),
     }
@@ -153,39 +190,38 @@ fn draw_one(paint: &mut Paint, code: Code, x: i64) {
 }
 
 fn edge(paint: &mut Paint, x: i64, rise: bool, arrow: bool) {
-    open(&mut paint.body);
-    if rise {
-        cmd_m(&mut paint.body, x, YS);
-        cmd_v(&mut paint.body, 0);
-        cmd_h(&mut paint.body, x + XS);
-    } else {
-        cmd_m(&mut paint.body, x, 0);
-        cmd_v(&mut paint.body, YS);
-        cmd_h(&mut paint.body, x + XS);
-    }
-    close_stroke(&mut paint.body, false);
-    if arrow {
-        arrow_at(&mut paint.body, x, rise);
-    }
+    let code = match (rise, arrow) {
+        (true, true) => Code::RiseA,
+        (true, false) => Code::Rise,
+        (false, true) => Code::FallA,
+        (false, false) => Code::Fall,
+    };
+    clock_edge(&mut paint.body, code, x, x + XS);
 }
 
 fn draw_soft(paint: &mut Paint, prev: u8, next: u8, x: i64) {
     let a = end_kind(prev);
     let b = end_kind(next);
     match (a, b) {
-        (End::Bus(c1), End::Bus(c2)) => bus_bus(paint, x, c1, c2),
-        (End::Line { y, .. }, End::Bus(c)) => line_bus(paint, x, y, c),
-        (End::Bus(c), End::Line { y, .. }) => bus_line(paint, x, c, y),
-        (End::X, End::Bus(c)) => line_bus(paint, x, YS / 2, c),
-        (End::Bus(c), End::X) => bus_line(paint, x, c, YS / 2),
+        (End::Bus(c1), End::Bus(c2)) => band_band(paint, x, bus_fill(c1), bus_fill(c2)),
+        (End::Line { y, dash }, End::Bus(c)) => line_band(paint, x, y, dash, bus_fill(c)),
+        (End::Bus(c), End::Line { y, dash }) => band_line(paint, x, bus_fill(c), y, dash),
+        (End::X, End::Bus(c)) => {
+            paint.hatch = true;
+            band_band(paint, x, "url(#xh)", bus_fill(c));
+        }
+        (End::Bus(c), End::X) => {
+            paint.hatch = true;
+            band_band(paint, x, bus_fill(c), "url(#xh)");
+        }
         (End::X, End::X) => draw_span(paint, Code::X, x, XS),
-        (End::X, End::Line { y, .. }) => {
-            draw_span(paint, Code::X, x, XS / 2);
-            slope(paint, x, YS / 2, y, false);
+        (End::X, End::Line { y, dash }) => {
+            paint.hatch = true;
+            band_line(paint, x, "url(#xh)", y, dash);
         }
         (End::Line { y, dash }, End::X) => {
-            slope(paint, x, y, YS / 2, dash);
-            draw_span(paint, Code::X, x + XS / 2, XS / 2);
+            paint.hatch = true;
+            line_band(paint, x, y, dash, "url(#xh)");
         }
         (End::Line { y: y1, dash: d1 }, End::Line { y: y2, dash: d2 }) => {
             if y1 == y2 && !d1 && !d2 && (y1 == 0 || y1 == YS) {
@@ -212,7 +248,10 @@ fn end_kind(c: u8) -> End {
         b'd' => End::Line { y: YS, dash: true },
         b'1' | b'h' | b'H' | b'n' | b'N' => End::Line { y: 0, dash: false },
         b'u' => End::Line { y: 0, dash: true },
-        b'z' => End::Line { y: YS / 2, dash: false },
+        b'z' => End::Line {
+            y: YS / 2,
+            dash: false,
+        },
         b'x' => End::X,
         b'=' | b'2' => End::Bus(2),
         b'3'..=b'9' => End::Bus(c - b'0'),
@@ -220,21 +259,23 @@ fn end_kind(c: u8) -> End {
     }
 }
 
-fn bus_bus(paint: &mut Paint, x: i64, c1: u8, c2: u8) {
+// A transition occupies x+3..x+9, with its crossing at x+6. Keeping the
+// same crossing for every state makes bus labels and timing nodes line up.
+fn band_band(paint: &mut Paint, x: i64, fill1: &str, fill2: &str) {
     open(&mut paint.body);
     cmd_m(&mut paint.body, x, 0);
     cmd_l(&mut paint.body, x + 3, 0);
-    cmd_l(&mut paint.body, x + 6, 10);
+    cmd_l(&mut paint.body, x + 6, YS / 2);
     cmd_l(&mut paint.body, x + 3, YS);
     cmd_l(&mut paint.body, x, YS);
-    close_fill(&mut paint.body, bus_fill(c1));
+    close_fill(&mut paint.body, fill1);
     open(&mut paint.body);
     cmd_m(&mut paint.body, x + XS, 0);
     cmd_l(&mut paint.body, x + 9, 0);
-    cmd_l(&mut paint.body, x + 6, 10);
+    cmd_l(&mut paint.body, x + 6, YS / 2);
     cmd_l(&mut paint.body, x + 9, YS);
     cmd_l(&mut paint.body, x + XS, YS);
-    close_fill(&mut paint.body, bus_fill(c2));
+    close_fill(&mut paint.body, fill2);
     open(&mut paint.body);
     cmd_m(&mut paint.body, x, 0);
     cmd_l(&mut paint.body, x + 3, 0);
@@ -247,38 +288,42 @@ fn bus_bus(paint: &mut Paint, x: i64, c1: u8, c2: u8) {
     close_stroke(&mut paint.body, false);
 }
 
-fn line_bus(paint: &mut Paint, x: i64, y: i64, c: u8) {
+fn line_band(paint: &mut Paint, x: i64, y: i64, dash: bool, fill: &str) {
     open(&mut paint.body);
-    cmd_m(&mut paint.body, x + 9, 0);
+    cmd_m(&mut paint.body, x + 3, y);
+    cmd_l(&mut paint.body, x + 9, 0);
     cmd_l(&mut paint.body, x + XS, 0);
     cmd_l(&mut paint.body, x + XS, YS);
-    cmd_l(&mut paint.body, x + 3, YS);
-    cmd_l(&mut paint.body, x + 9, 0);
-    close_fill(&mut paint.body, bus_fill(c));
+    cmd_l(&mut paint.body, x + 9, YS);
+    paint.body.push(b'Z');
+    close_fill(&mut paint.body, fill);
+    hline(paint, x, 3, y, dash);
     open(&mut paint.body);
-    cmd_m(&mut paint.body, x, y);
+    cmd_m(&mut paint.body, x + XS, 0);
+    cmd_l(&mut paint.body, x + 9, 0);
     cmd_l(&mut paint.body, x + 3, y);
-    cmd_l(&mut paint.body, x + 9, if y > 10 { 0 } else { YS });
+    cmd_l(&mut paint.body, x + 9, YS);
     cmd_h(&mut paint.body, x + XS);
     close_stroke(&mut paint.body, false);
-    hline(paint, x, XS, 0, false);
-    hline(paint, x, XS, YS, false);
 }
 
-fn bus_line(paint: &mut Paint, x: i64, c: u8, y: i64) {
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, 0);
-    cmd_l(&mut paint.body, x + 3, 0);
-    cmd_l(&mut paint.body, x + 9, YS);
-    cmd_l(&mut paint.body, x, YS);
-    close_fill(&mut paint.body, bus_fill(c));
+fn band_line(paint: &mut Paint, x: i64, fill: &str, y: i64, dash: bool) {
     open(&mut paint.body);
     cmd_m(&mut paint.body, x, 0);
     cmd_l(&mut paint.body, x + 3, 0);
     cmd_l(&mut paint.body, x + 9, y);
-    cmd_h(&mut paint.body, x + XS);
+    cmd_l(&mut paint.body, x + 3, YS);
+    cmd_l(&mut paint.body, x, YS);
+    paint.body.push(b'Z');
+    close_fill(&mut paint.body, fill);
+    open(&mut paint.body);
+    cmd_m(&mut paint.body, x, 0);
+    cmd_l(&mut paint.body, x + 3, 0);
+    cmd_l(&mut paint.body, x + 9, y);
+    cmd_l(&mut paint.body, x + 3, YS);
+    cmd_h(&mut paint.body, x);
     close_stroke(&mut paint.body, false);
-    hline(paint, x, XS, y, false);
+    hline(paint, x + 9, XS - 9, y, dash);
 }
 
 fn slope(paint: &mut Paint, x: i64, y1: i64, y2: i64, dash: bool) {
@@ -306,6 +351,15 @@ fn hline(paint: &mut Paint, x: i64, w: i64, y: i64, dash: bool) {
     cmd_m(&mut paint.body, x, y);
     cmd_h(&mut paint.body, x + w);
     close_stroke(&mut paint.body, dash);
+}
+
+fn rails(paint: &mut Paint, x: i64, w: i64) {
+    open(&mut paint.body);
+    cmd_m(&mut paint.body, x, 0);
+    cmd_h(&mut paint.body, x + w);
+    cmd_m(&mut paint.body, x, YS);
+    cmd_h(&mut paint.body, x + w);
+    close_stroke(&mut paint.body, false);
 }
 
 fn arrow_at(body: &mut Vec<u8>, x: i64, rise: bool) {
@@ -342,14 +396,21 @@ pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey)
     let full = half * 2;
     body.extend_from_slice(b"<pattern id=\"k");
     push_i64(body, id as i64);
-    body.extend_from_slice(b"\" width=\"");
+    body.extend_from_slice(b"\" x=\"-4\" y=\"-2\" width=\"");
     push_i64(body, full);
     body.extend_from_slice(b"\" height=\"");
-    push_i64(body, YS);
-    body.extend_from_slice(b"\" patternUnits=\"userSpaceOnUse\">");
+    push_i64(body, YS + 4);
+    body.extend_from_slice(b"\" patternUnits=\"userSpaceOnUse\" fill=\"none\" stroke=\"#000\" stroke-width=\"1\" stroke-linecap=\"round\" stroke-linejoin=\"round\" viewBox=\"-4 -2 ");
+    push_i64(body, full);
+    body.push(b' ');
+    push_i64(body, YS + 4);
+    body.extend_from_slice(b"\">");
+    // All stroke and arrow geometry is inside the tile; overflow=visible is
+    // deliberately unnecessary, since SVG renderers clip pattern paint.
     open(body);
+    edge_d(body, key.s3, -4, 0);
     edge_d(body, key.s0, 0, half);
-    edge_d(body, key.s2, half, full);
+    edge_d(body, key.s2, half, full - 4);
     close_stroke(body, false);
     if matches!(key.s0, Code::RiseA) {
         arrow_at(body, 0, true);
@@ -364,6 +425,15 @@ pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey)
         arrow_at(body, half, false);
     }
     body.extend_from_slice(b"</pattern>");
+}
+
+fn clock_edge(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64) {
+    open(body);
+    edge_d(body, code, x0, x1);
+    close_stroke(body, matches!(code, Code::DashH | Code::DashL));
+    if matches!(code, Code::RiseA | Code::FallA) {
+        arrow_at(body, x0, matches!(code, Code::RiseA));
+    }
 }
 
 fn edge_d(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64) {
@@ -416,9 +486,7 @@ fn open(body: &mut Vec<u8>) {
 }
 
 fn close_stroke(body: &mut Vec<u8>, dash: bool) {
-    body.extend_from_slice(
-        b"\" fill=\"none\" stroke=\"#000\" stroke-width=\"1\" stroke-linecap=\"round\"",
-    );
+    body.push(b'"');
     if dash {
         body.extend_from_slice(b" stroke-dasharray=\"1,3\"");
     }
@@ -455,3 +523,105 @@ fn cmd_v(body: &mut Vec<u8>, y: i64) {
     push_i64(body, y);
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn body(paint: &Paint) -> &str {
+        std::str::from_utf8(&paint.body).unwrap()
+    }
+
+    #[test]
+    fn unknown_bus_transitions_keep_both_bands() {
+        for (prev, next) in [(b'x', b'3'), (b'3', b'x')] {
+            let mut paint = Paint::new();
+            draw_soft(&mut paint, prev, next, 40);
+            let svg = body(&paint);
+            assert!(
+                paint.hatch,
+                "unknown band must request the hatch definition"
+            );
+            assert!(svg.contains("fill=\"url(#xh)\""));
+            assert!(svg.contains("fill=\"#ffffb4\""));
+            // Both rails cross between the same endpoints as a bus-to-bus
+            // transition; an unknown state must not collapse into high-Z.
+            assert!(svg.contains("M40 0L43 0L49 20L60 20M40 20L43 20L49 0L60 0"));
+        }
+    }
+
+    #[test]
+    fn bus_line_transitions_taper_to_the_actual_level() {
+        for (code, y) in [(b'0', YS), (b'1', 0), (b'z', YS / 2)] {
+            let mut paint = Paint::new();
+            draw_soft(&mut paint, b'3', code, 0);
+            assert!(body(&paint).contains(&format!("M0 0L3 0L9 {y}L3 20H0")));
+            assert!(body(&paint).contains(&format!("M9 {y}H20")));
+
+            let mut paint = Paint::new();
+            draw_soft(&mut paint, code, b'3', 0);
+            assert!(body(&paint).contains(&format!("M20 0L9 0L3 {y}L9 20H20")));
+            assert!(body(&paint).contains(&format!("M0 {y}H3")));
+        }
+    }
+
+    #[test]
+    fn clocks_stay_compact_and_phase_origins_stay_small() {
+        let clock = |paint: &mut Paint, times, skip| {
+            draw_clock(
+                paint,
+                0,
+                Code::RiseA,
+                Code::High,
+                Code::Fall,
+                Code::Low,
+                0,
+                times,
+                skip,
+                i64::MAX,
+            );
+        };
+        let mut short = Paint::new();
+        clock(&mut short, 4, 0);
+        let mut long = Paint::new();
+        clock(&mut long, 1_000_000, 0);
+        assert!(long.body.len() < short.body.len() + 40);
+        assert_eq!(long.clocks.len(), 1);
+
+        for skip in 0..8 {
+            let mut paint = Paint::new();
+            clock(&mut paint, 4, skip);
+            assert!(!body(&paint).contains("width=\"-"));
+            assert!(!body(&paint).contains("height=\"-"));
+        }
+        let mut cropped = Paint::new();
+        clock(&mut cropped, 1_000_000, 1_999_997);
+        assert!(body(&cropped).contains("translate(-20)"));
+        assert!(!body(&cropped).contains("1999997"));
+
+        let mut hidden = Paint::new();
+        clock(&mut hidden, 4, 8);
+        assert!(hidden.body.is_empty());
+        assert!(hidden.clocks.is_empty());
+    }
+
+    #[test]
+    fn clock_tiles_keep_arrows_and_horizontal_strokes_inside_the_tile() {
+        let mut svg = Vec::new();
+        write_clock_pattern(
+            &mut svg,
+            0,
+            &ClockKey {
+                s0: Code::RiseA,
+                s1: Code::High,
+                s2: Code::Fall,
+                s3: Code::Low,
+                extra: 0,
+            },
+        );
+        let svg = std::str::from_utf8(&svg).unwrap();
+        assert!(svg.contains("viewBox=\"-4 -2 40 24\""));
+        assert!(svg.contains("M-3 12L0 3L3 12Z"));
+        assert!(svg.contains("M-4 20H0M0 20V0H20M20 0V20H36"));
+        assert!(!svg.contains("overflow="));
+    }
+}

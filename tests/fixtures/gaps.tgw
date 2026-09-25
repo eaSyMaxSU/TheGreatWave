@@ -1,0 +1,5 @@
+clk:         p.....|...
+Data:        x.345x|=.x => head body tail data
+Request:     0.1..0|1.0
+---
+Acknowledge: 1.....|01.

@@ -6,7 +6,7 @@ fn root() -> PathBuf {
 }
 
 fn fixture(name: &str) -> String {
-    let path = root().join("tests/fixtures").join(format!("{name}.json5"));
+    let path = root().join("tests/fixtures").join(format!("{name}.tgw"));
     fs::read_to_string(path).unwrap_or_else(|e| panic!("read {name}: {e}"))
 }
 
@@ -25,7 +25,7 @@ fn fixtures_render() {
     assert!(step.contains(">head<"));
     assert!(step.contains(">body<"));
     assert!(step.contains(">tail<"));
-    assert!(step.contains("url(#k"));
+    assert!(step.contains("url(#tgw-"));
     assert!(!step.contains("<use"));
 
     let arcs = render_fixture("arcs");
@@ -40,7 +40,7 @@ fn fixtures_render() {
     let clocks = render_fixture("clocks");
     assert!(clocks.contains(">pclk<"));
     assert!(clocks.contains(">Nclk<"));
-    assert!(clocks.contains("<pattern id=\"k"));
+    assert!(clocks.contains("-k0\""));
 
     let gaps = render_fixture("gaps");
     assert!(gaps.contains(">Acknowledge<"));
@@ -58,38 +58,49 @@ fn fixtures_render() {
     assert!(marks.contains("Figure 100"));
     assert!(marks.contains(">0<"));
     assert!(marks.contains(">9<"));
-    assert!(marks.contains("id=\"gd\""));
+    assert!(marks.contains("-gd\""));
 }
 
 #[test]
 fn snapshots() {
-    let mut wrote = Vec::new();
-    for name in ["step4", "arcs", "arcs1", "clocks", "gaps", "bundles", "marks"] {
+    for name in [
+        "step4",
+        "arcs",
+        "arcs1",
+        "clocks",
+        "gaps",
+        "bundles",
+        "marks",
+        "precision",
+    ] {
         let svg = render_fixture(name);
         let path = root().join("tests/fixtures").join(format!("{name}.svg"));
-        match fs::read_to_string(&path) {
-            Ok(expected) => assert_eq!(expected, svg, "snapshot {name}"),
-            Err(_) => {
-                fs::write(&path, &svg).unwrap();
-                wrote.push(name);
-            }
+        if std::env::var_os("UPDATE_SNAPSHOTS").as_deref() == Some(std::ffi::OsStr::new("1")) {
+            fs::write(&path, &svg).unwrap();
+        } else {
+            let expected = fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!(
+                    "read {}: {e}; update explicitly with UPDATE_SNAPSHOTS=1",
+                    path.display()
+                )
+            });
+            assert_eq!(expected, svg, "snapshot {name}");
         }
     }
-    assert!(wrote.is_empty(), "wrote snapshots {wrote:?}; re-run after review");
 }
 
 #[test]
 fn long_clock_is_constant_paint() {
     let short = "{signal:[{name:'clk',wave:'p...'}]}";
     let mut dots = String::from("p");
-    dots.extend(std::iter::repeat('.').take(9_999));
+    dots.extend(std::iter::repeat_n('.', 9_999));
     let long = format!("{{signal:[{{name:'clk',wave:'{dots}'}}]}}");
     let a = tgw::render(short).unwrap();
     let b = tgw::render(&long).unwrap();
     assert!(b.len() < 8_000, "svg bytes {}", b.len());
     assert!(!b.contains("<use"));
-    assert!(b.contains("<pattern id=\"k0\""));
-    assert!(b.contains("width=\"400000\""));
+    assert!(b.contains("-k0\""));
+    assert!(b.contains("H400000"));
     assert_eq!(tags(&a, "pattern"), tags(&b, "pattern"));
     assert_eq!(tags(&a, "rect"), tags(&b, "rect"));
     assert_eq!(tags(&a, "path"), tags(&b, "path"));
@@ -99,7 +110,7 @@ fn long_clock_is_constant_paint() {
 #[test]
 fn long_hold_is_one_stroke() {
     let mut dots = String::from("1");
-    dots.extend(std::iter::repeat('.').take(9_999));
+    dots.extend(std::iter::repeat_n('.', 9_999));
     let src = format!("{{signal:[{{name:'held',wave:'{dots}'}}]}}");
     let svg = tgw::render(&src).unwrap();
     assert!(svg.contains("H400000"));
@@ -113,7 +124,7 @@ fn long_hold_is_one_stroke() {
 fn clock_after_prefix_is_translated() {
     let svg = tgw::render("{signal:[{name:'c',wave:'xp'}]}").unwrap();
     assert!(svg.contains("translate(40)"));
-    assert!(svg.contains("url(#k0)"));
+    assert!(svg.contains("-k0)"));
 }
 
 #[test]
@@ -150,4 +161,117 @@ fn piecewise_and_comments() {
     let svg = tgw::render(src).unwrap();
     assert!(svg.contains("<path"));
     assert!(svg.contains("M0,0"));
+}
+
+fn dimension(svg: &str, attribute: &str) -> f64 {
+    svg.split_once(&format!("{attribute}=\""))
+        .unwrap()
+        .1
+        .split('"')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn fractional_and_negative_phase_have_correct_canvas_extents() {
+    let plain = tgw::render("{signal:[{name:'clk',wave:'p...'}]}").unwrap();
+    let delayed = tgw::render("{signal:[{name:'clk',wave:'p...',phase:-0.25}]}").unwrap();
+    let advanced = tgw::render("{signal:[{name:'clk',wave:'p...',phase:0.125}]}").unwrap();
+    assert_eq!(
+        dimension(&delayed, "width") - dimension(&plain, "width"),
+        10.0
+    );
+    assert_eq!(
+        dimension(&plain, "width") - dimension(&advanced, "width"),
+        5.0
+    );
+    assert!(advanced.contains("translate(-5)"));
+    assert!(advanced.contains("-lane-crop)"));
+}
+
+#[test]
+fn cropped_dense_waves_only_paint_the_visible_window() {
+    let wave = "23456789".repeat(1250);
+    let svg = tgw::render(&format!(
+        "{{signal:[{{name:'data',wave:'{wave}'}}],config:{{hbounds:[5000,5005]}}}}"
+    ))
+    .unwrap();
+    assert!(
+        svg.len() < 12_000,
+        "cropped SVG contains {} bytes",
+        svg.len()
+    );
+    assert!(tags(&svg, "path") < 40);
+}
+
+#[test]
+fn inline_documents_isolate_paint_and_preserve_text() {
+    let a = tgw::render("{signal:[{name:'url(#k0)',wave:'p...'}]}").unwrap();
+    let b = tgw::render("{signal:[{name:'second',wave:'n...'}]}").unwrap();
+    let ids = |s: &str| -> Vec<String> {
+        s.split(" id=\"")
+            .skip(1)
+            .map(|part| part.split('"').next().unwrap().to_string())
+            .collect()
+    };
+    let a_ids = ids(&a);
+    let b_ids = ids(&b);
+    assert!(a_ids.iter().all(|id| !b_ids.contains(id)));
+    for svg in [&a, &b] {
+        let definitions = ids(svg);
+        for reference in svg.split("url(#").skip(1) {
+            let id = reference.split(')').next().unwrap();
+            if id.starts_with("tgw-") {
+                assert!(definitions.contains(&id.to_string()), "{id}");
+            }
+        }
+        assert!(!svg.contains("<style"));
+        assert!(svg.contains("role=\"img\""));
+    }
+    assert!(a.contains(">url(#k0)<"));
+}
+
+#[test]
+fn paths_preserve_curves_arcs_and_native_scaling() {
+    let svg = tgw::render("{signal:[{name:'analog',period:2,wave:['pw',{d:'M0,0 C1,0 1,1 2,1 A1,1 30 0 1 3,0'}]}],config:{hscale:2}}").unwrap();
+    assert!(svg.contains("scale(160,-20)"));
+    assert!(svg.contains("vector-effect=\"non-scaling-stroke\""));
+    assert!(svg.contains("A1,1 30 0 1 3,0"));
+    assert!(dimension(&svg, "width") > 480.0);
+}
+
+#[test]
+fn errors_clear_reused_output_and_do_not_panic() {
+    let mut out = vec![42; 1024];
+    for source in [
+        "{signal:[{wave:'p',period:-1}]}",
+        "{signal:[{wave:['pw',{d:'M0 0 !'}]}]}",
+        "{signal:[{wave:'p'}],head:{tick:'0 1e308'}}",
+        "{signal:[] /*",
+    ] {
+        assert!(tgw::render_into(source, &mut out).is_err(), "{source}");
+        assert!(out.is_empty());
+        out.extend_from_slice(b"reuse");
+    }
+}
+
+#[test]
+fn malformed_utf8_source_fragments_are_bounded() {
+    let alphabet = [
+        '{', '}', '[', ']', '\"', '\\', '/', '*', ':', ',', '.', '+', '-', '0', '1', 'e', 'a', ' ',
+        '\n', '波',
+    ];
+    let mut seed = 0x317f9_u64;
+    for len in 0..160 {
+        for _ in 0..12 {
+            let mut source = String::from("{signal:");
+            for _ in 0..len {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                source.push(alphabet[(seed >> 32) as usize % alphabet.len()]);
+            }
+            let _ = tgw::render(&source);
+        }
+    }
 }

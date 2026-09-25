@@ -1,0 +1,8 @@
+@title WaveDrom example
+@tick 0
+@footer Figure 100
+@foot-tock 9
+
+clk:     p....
+Data:    x345x => a b c
+Request: 01..0

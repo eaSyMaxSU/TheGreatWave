@@ -1,0 +1,10 @@
+# Edit the aligned waveforms; every symbol is one time unit.
+@title Bus transfer
+@tick 0
+@footer Request / acknowledge handshake
+
+clk:         P.....|...
+data [7:0]:  x.345x|=.x => head body tail "read data"
+request:     0.1..0|1.0
+---
+acknowledge: 1.....|01.
