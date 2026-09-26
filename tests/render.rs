@@ -54,7 +54,7 @@ fn fixtures_render() {
     assert!(bundles.contains("stroke=\"#0041c4\""));
 
     let marks = render_fixture("marks");
-    assert!(marks.contains("WaveDrom example"));
+    assert!(marks.contains("Timing marks"));
     assert!(marks.contains("Figure 100"));
     assert!(marks.contains(">0<"));
     assert!(marks.contains(">9<"));

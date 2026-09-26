@@ -137,4 +137,8 @@ node scripts/visual-check.cjs /tmp/tgw-visual
 
 Set `PLAYWRIGHT_MODULE` to a local Playwright package and `BROWSER_EXECUTABLE` to a Chromium browser if they are outside the defaults. The script verifies SVG references and layout, then saves screenshots at 1× and 2× resolution.
 
-Wave rules and the bus palette originate in [WaveDrom](https://wavedrom.com/) (Copyright 2011–2026 Aliaksei Chapyzhenka). MIT licensed.
+## License
+
+The Great Wave is released under the MIT License. Copyright (c) 2026 eaSyMaxSU.
+
+Wave rules, lane semantics, and the default bus palette originate in [WaveDrom](https://wavedrom.com/) by Aliaksei Chapyzhenka (Copyright 2011–2026), which is MIT licensed ([source](https://github.com/wavedrom/wavedrom), [WaveJSON](https://github.com/wavedrom/schema)). Legacy input uses the [JSON5](https://spec.json5.org/) subset customary for those diagrams ([project](https://github.com/json5/json5), MIT). SVG arc geometry follows the [SVG 2 arc implementation notes](https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes).

@@ -1,7 +1,13 @@
 //! The Great Wave renders native `.tgw` and WaveJSON timing diagrams to SVG.
 //!
+//! Copyright (c) 2026 eaSyMaxSU. Licensed under the MIT License; see `LICENSE`.
+//!
 //! Wave rules and the default palette come from WaveDrom
-//! (Copyright 2011–2026 Aliaksei Chapyzhenka).
+//! (Copyright 2011–2026 Aliaksei Chapyzhenka, MIT):
+//! <https://wavedrom.com/>, <https://github.com/wavedrom/wavedrom>.
+//! WaveJSON: <https://github.com/wavedrom/schema>.
+//! JSON5 subset: <https://spec.json5.org/>.
+//! SVG arc geometry: <https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes>.
 #![forbid(unsafe_code)]
 
 mod emit;
