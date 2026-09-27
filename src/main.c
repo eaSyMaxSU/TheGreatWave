@@ -8,19 +8,19 @@ static const char HELP[] =
     "\n"
     "Usage: tgw [OPTIONS] [INPUT]\n"
     "\n"
-    "  INPUT                  Read .tgw or WaveJSON; omit or use - for stdin\n"
-    "  -i, --input PATH        Input file (alternative to positional INPUT)\n"
-    "  -o, --output PATH       Write output to a file; omit or use - for stdout\n"
-    "      --format FORMAT    Input syntax: auto (default), tgw, or json5\n"
-    "      --convert          Convert input to readable, canonical .tgw text\n"
-    "  -t, --indent N          Indent SVG output by N spaces (default: compact)\n"
-    "  -h, --help              Show this help\n"
-    "  -v, --version           Show version\n"
+    "INPUT                  Read .tgw or WaveJSON; omit or use - for stdin\n"
+    "-i, --input PATH        Input file (alternative to positional INPUT)\n"
+    "-o, --output PATH       Write output to a file; omit or use - for stdout\n"
+    "--format FORMAT    Input syntax: auto (default), tgw, or json5\n"
+    "--convert          Convert input to readable, canonical .tgw text\n"
+    "-t, --indent N          Indent SVG output by N spaces (default: compact)\n"
+    "-h, --help              Show this help\n"
+    "-v, --version           Show version\n"
     "\n"
     "Examples:\n"
-    "  tgw diagram.tgw -o diagram.svg\n"
-    "  tgw legacy.json5 --convert -o diagram.tgw\n"
-    "  tgw --format tgw < diagram.tgw > diagram.svg\n";
+    "tgw diagram.tgw -o diagram.svg\n"
+    "tgw legacy.json5 --convert -o diagram.tgw\n"
+    "tgw --format tgw < diagram.tgw > diagram.svg\n";
 
 typedef struct Options {
     const char *input;

@@ -406,11 +406,69 @@ static int wave_ok(uint8_t c) {
     }
 }
 
+static int debug_literal(uint32_t cp) {
+    if (cp < 0x20 || cp == 0x7f || (cp >= 0x80 && cp < 0xa1) || cp == 0xad || cp == 0x2028 || cp == 0x2029)
+        return 0;
+    if (cp >= 0xfdd0 && cp <= 0xfdef) return 0;
+    if ((cp & 0xffff) >= 0xfffe) return 0;
+    return 1;
+}
+
 static void sym_debug(uint32_t cp, char *out, size_t cap) {
-    if (cp >= 32 && cp < 127 && cp != '\\' && cp != '\'')
-        snprintf(out, cap, "'%c'", (char)cp);
-    else
+    const char *esc = NULL;
+    if (cp == '\\')
+        esc = "\\\\";
+    else if (cp == '\'')
+        esc = "\\'";
+    else if (cp == '\n')
+        esc = "\\n";
+    else if (cp == '\r')
+        esc = "\\r";
+    else if (cp == '\t')
+        esc = "\\t";
+    if (esc) {
+        snprintf(out, cap, "'%s'", esc);
+        return;
+    }
+    if (!debug_literal(cp)) {
         snprintf(out, cap, "'\\u{%x}'", cp);
+        return;
+    }
+    char tmp[4];
+    size_t n = utf8_encode(cp, tmp);
+    if (n + 3 >= cap) n = 0;
+    out[0] = '\'';
+    memcpy(out + 1, tmp, n);
+    out[1 + n] = '\'';
+    out[2 + n] = 0;
+}
+
+static void push_debug_str(Buf *b, const char *s, size_t n) {
+    buf_push(b, '"');
+    size_t i = 0;
+    uint32_t cp;
+    while (i < n) {
+        size_t at = i;
+        if (!utf8_next(s, n, &i, &cp)) break;
+        if (cp == '"')
+            BUF_LIT(b, "\\\"");
+        else if (cp == '\\')
+            BUF_LIT(b, "\\\\");
+        else if (cp == '\n')
+            BUF_LIT(b, "\\n");
+        else if (cp == '\r')
+            BUF_LIT(b, "\\r");
+        else if (cp == '\t')
+            BUF_LIT(b, "\\t");
+        else if (!debug_literal(cp)) {
+            char tmp[16];
+            snprintf(tmp, sizeof tmp, "\\u{%x}", cp);
+            buf_puts(b, tmp);
+        } else
+            buf_append(b, s + at, i - at);
+    }
+    buf_push(b, '"');
+    buf_push(b, 0);
 }
 
 typedef struct OpenGroup {
@@ -434,7 +492,9 @@ int tgw_parse_native(const char *src, size_t len, Doc *doc, Arena *arena, TgwErr
         int nl = end < len;
         offset = end + (nl ? 1 : 0);
         size_t cut;
-        if (strip_comment(src + line_off, raw_n, line_off, &cut, err)) return -1;
+        size_t scan_n = raw_n + (nl ? 1 : 0);
+        if (strip_comment(src + line_off, scan_n, line_off, &cut, err)) return -1;
+        if (cut > raw_n) cut = raw_n;
         size_t ts = trim_start(src + line_off, cut);
         size_t te = trim_end(src + line_off + ts, cut - ts);
         if (!te) continue;
@@ -670,10 +730,11 @@ int tgw_parse_native(const char *src, size_t len, Doc *doc, Arena *arena, TgwErr
         uint8_t seen = 0;
         const char *opt = have_semi ? rest + semi + 1 : NULL;
         size_t opt_n = have_semi ? rest_n - semi - 1 : 0;
-        while (opt && opt_n) {
-            size_t sep;
+        while (opt) {
+            size_t sep = 0;
             size_t piece_n = opt_n;
-            if (find_outside(opt, opt_n, ";", 1, &sep)) piece_n = sep;
+            int more = opt_n && find_outside(opt, opt_n, ";", 1, &sep);
+            if (more) piece_n = sep;
             size_t os = trim_start(opt, piece_n);
             size_t oe = trim_end(opt + os, piece_n - os);
             const char *piece = opt + os;
@@ -707,11 +768,21 @@ int tgw_parse_native(const char *src, size_t len, Doc *doc, Arena *arena, TgwErr
             else if (key_n == 5 && memcmp(okey, "under", 5) == 0)
                 bit = 16;
             else {
-                err_fmt(err, at, "unknown lane option \"%.*s\"", (int)key_n, okey);
+                uint8_t stack[160];
+                Buf msg;
+                buf_init(&msg, stack, sizeof stack);
+                push_debug_str(&msg, okey, key_n);
+                err_fmt(err, at, "unknown lane option %s", (char *)msg.data);
+                buf_free(&msg);
                 return -1;
             }
             if (seen & bit) {
-                err_fmt(err, at, "duplicate lane option \"%.*s\"", (int)key_n, okey);
+                uint8_t stack[160];
+                Buf msg;
+                buf_init(&msg, stack, sizeof stack);
+                push_debug_str(&msg, okey, key_n);
+                err_fmt(err, at, "duplicate lane option %s", (char *)msg.data);
+                buf_free(&msg);
                 return -1;
             }
             seen |= bit;
