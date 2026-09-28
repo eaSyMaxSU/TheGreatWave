@@ -7,6 +7,18 @@ authors = ["eaSyMaxSU"]
 license = "MIT"
 publish = false
 
+[features]
+view = ["dep:gpui-kit", "dep:notify"]
+
+[dependencies]
+gpui-kit = { version = "=0.7.0", optional = true, default-features = false }
+notify = { version = "8", optional = true }
+
 [[bin]]
 name = "tgw"
 path = "src/main.rs"
+
+[[bin]]
+name = "tgw-view"
+path = "src/view.rs"
+required-features = ["view"]

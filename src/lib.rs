@@ -20,6 +20,8 @@ mod w;
 mod wave;
 mod width;
 
+pub use width::text_width;
+
 pub(crate) const XS: i64 = 20;
 pub(crate) const YS: i64 = 20;
 pub(crate) const YO: i64 = 36;

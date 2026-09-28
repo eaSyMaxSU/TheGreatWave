@@ -1,7 +1,7 @@
 //! Conservative advance estimates for the SVG's system sans-serif font stack.
 //! These are layout metrics, not embedded fonts; the browser still shapes text.
 
-pub(crate) fn text_width(s: &str, size: f64) -> f64 {
+pub fn text_width(s: &str, size: f64) -> f64 {
     let size = if size.is_finite() && size > 0.0 {
         size
     } else {

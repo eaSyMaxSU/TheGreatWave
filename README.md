@@ -33,6 +33,32 @@ Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automat
 
 `--convert` also formats native diagrams with aligned waveform columns. Conversion preserves supported diagram data; comments and unsupported JSON properties are omitted.
 
+## Live view
+
+`tgw-view` opens one diagram in a window and redraws it whenever that file is saved. The default `tgw` build stays dependency-free; the viewer is an optional feature and needs Rust 1.85 or newer.
+
+Build it, then open a `.tgw` or WaveJSON file:
+
+```sh
+cargo build --release --features view --bin tgw-view
+./target/release/tgw-view examples/transfer.tgw
+```
+
+The same command works while editing. Save the file and the window updates. `tgw-view --help` prints usage. Pass one path only; stdin is not accepted.
+
+```sh
+cargo run --release --features view --bin tgw-view -- examples/transfer.tgw
+```
+
+Signal names stay fixed on the left. Tick numbers, the title, and the waveforms scroll together. Drag a scrollbar, click its track, or use the trackpad; hold Shift to move a vertical scroll sideways. A diagram wider than the window scrolls horizontally, and a taller one scrolls vertically. A tick label that would be cut by the edge is omitted until it fits. A diagram that already fits the window is enlarged and has no scrollbar. `@bounds` still limits the time range that is drawn.
+
+A syntax error or a missing file keeps the last successful picture and shows `path:line:col: message` until the next good save. Command-W and Command-Q close the window.
+
+```sh
+cargo test --features view
+cargo clippy --all-targets --features view -- -D warnings
+```
+
 ## Native format
 
 One signal per line: `name: wave`. Names can contain spaces and bus indices, such as `data [7:0]`. Blank lines are ignored; `---` inserts a blank lane. `#` starts a comment outside quotes. Indentation is cosmetic.
