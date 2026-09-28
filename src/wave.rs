@@ -101,7 +101,10 @@ pub(crate) fn compile_window(
                 let lo = segment.prefix_bricks(i, scale)?;
                 let hi = segment.prefix_bricks(i + 1, scale)?;
                 let center = start as f64 + (lo as f64 + hi as f64) / 2.0;
-                gaps.push((center - phase_bricks) * XS as f64);
+                let x = (center - phase_bricks) * XS as f64;
+                if x >= 0.0 && x <= width_bricks * XS as f64 {
+                    gaps.push(x);
+                }
             }
         }
         prev = Some(segment.code);

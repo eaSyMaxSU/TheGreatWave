@@ -4,9 +4,13 @@
 
 use std::ffi::OsString;
 use std::fs;
+use std::future::{poll_fn, Future};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
+use std::task::{Context as TaskContext, Poll, Waker};
 use std::thread;
 use std::time::Duration;
 
@@ -140,6 +144,7 @@ struct Viewer {
     user_sized: bool,
     seen_viewport: Option<(f32, f32)>,
     hug_request: Option<(f32, f32)>,
+    cached_frame: Option<(u64, Frame)>,
 }
 
 impl Viewer {
@@ -167,6 +172,7 @@ impl Viewer {
             user_sized: false,
             seen_viewport: None,
             hug_request: None,
+            cached_frame: None,
         }
     }
 
@@ -180,11 +186,11 @@ impl Viewer {
         if self.watching {
             return true;
         }
-        let Ok(events) = watch(&self.path) else {
+        let Ok(gate) = watch(&self.path) else {
             return false;
         };
         self.watching = true;
-        self.follow(events, cx);
+        self.follow(gate, cx);
         true
     }
 
@@ -193,11 +199,7 @@ impl Viewer {
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
             loop {
-                executor
-                    .spawn(async {
-                        thread::sleep(SOURCE_POLL);
-                    })
-                    .await;
+                executor.timer(SOURCE_POLL).await;
                 let stamp = source_stamp(&path);
                 let gone = this
                     .update(cx, |view, cx| {
@@ -218,24 +220,13 @@ impl Viewer {
         .detach();
     }
 
-    fn follow(&mut self, events: Receiver<()>, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let executor = cx.background_executor().clone();
-            let mut events = events;
-            loop {
-                let (events_back, tick) = executor
-                    .spawn(async move {
-                        let tick = events.recv();
-                        (events, tick)
-                    })
-                    .await;
-                events = events_back;
-                if tick.is_err() {
-                    break;
-                }
-                if this.update(cx, |view, cx| view.request_reload(cx)).is_err() {
-                    break;
-                }
+    fn follow(&mut self, gate: Arc<Gate>, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            if !gate.next().await {
+                break;
+            }
+            if this.update(cx, |view, cx| view.request_reload(cx)).is_err() {
+                break;
             }
         })
         .detach();
@@ -248,10 +239,9 @@ impl Viewer {
         let path = self.path.clone();
         let label = self.label.clone();
         cx.spawn(async move |this, cx| {
-            let executor = cx.background_executor().clone();
-            let fresh = executor
-                .spawn(async move { load_fresh(&path, &label) })
-                .await;
+            // Reading waits for the writer to finish, so it stays off the
+            // shared worker pool that also rasterizes the picture.
+            let fresh = io_task(move || load_fresh(&path, &label)).await;
             this.update(cx, |view, cx| view.finish_load(epoch, fresh, cx))
                 .ok();
         })
@@ -301,8 +291,11 @@ impl Viewer {
             return;
         }
         let viewport = window.viewport_size();
-        let Some(height) = hugged_height(layout, viewport.height.as_f32(), self.state.status().is_some())
-        else {
+        let Some(height) = hugged_height(
+            layout,
+            viewport.height.as_f32(),
+            self.state.status().is_some(),
+        ) else {
             return;
         };
         let width = viewport.width.as_f32();
@@ -317,7 +310,7 @@ impl Viewer {
         if self.state.status().is_some() {
             height -= STATUS_HEIGHT;
         }
-        let frame = self.state.svg.as_deref().and_then(diagram_frame)?;
+        let frame = self.frame()?;
         let layout = layout_diagram(
             &frame,
             viewport.width.as_f32(),
@@ -330,8 +323,20 @@ impl Viewer {
         Some(layout)
     }
 
+    /// The SVG walk that finds the drawing bounds is reused until the picture changes.
+    fn frame(&mut self) -> Option<Frame> {
+        if let Some((generation, frame)) = self.cached_frame {
+            if generation == self.state.generation {
+                return Some(frame);
+            }
+        }
+        let frame = self.state.svg.as_deref().and_then(diagram_frame)?;
+        self.cached_frame = Some((self.state.generation, frame));
+        Some(frame)
+    }
+
     fn request_paint(&mut self, cx: &mut Context<Self>) {
-        let Some(layout) = self.layout.clone() else {
+        let Some(layout) = self.layout else {
             return;
         };
         if panes_ready(
@@ -398,8 +403,8 @@ impl Viewer {
     }
 
     fn take_paint_job(&mut self, cx: &mut Context<Self>) -> Option<PaintJob> {
-        let layout = self.layout.clone()?;
-        let svg = self.state.svg.clone()?;
+        let layout = self.layout?;
+        let svg = Arc::clone(self.state.svg.as_ref()?);
         if panes_ready(
             self.labels.as_ref(),
             self.waves.as_ref(),
@@ -428,7 +433,7 @@ impl Viewer {
     }
 
     fn on_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(layout) = self.layout.clone() else {
+        let Some(layout) = self.layout else {
             return;
         };
         let delta = event.delta.pixel_delta(window.line_height());
@@ -451,7 +456,7 @@ impl Viewer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(layout) = self.layout.clone() else {
+        let Some(layout) = self.layout else {
             return;
         };
         let (x, y) = pointer(window, event.position);
@@ -582,7 +587,7 @@ impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.note_viewport(window);
         self.layout = self.sync_layout(window);
-        if let Some(layout) = self.layout.clone() {
+        if let Some(layout) = self.layout {
             self.hug_window(window, &layout);
         }
         self.request_paint(cx);
@@ -600,7 +605,7 @@ impl Render for Viewer {
             .flex_col()
             .relative()
             .bg(rgb(0x00ffffff));
-        if let Some(layout) = self.layout.clone() {
+        if let Some(layout) = self.layout {
             let picture = div()
                 .absolute()
                 .left(px(layout.origin_x))
@@ -654,12 +659,13 @@ impl Render for Viewer {
     }
 }
 
-fn watch(path: &Path) -> Result<Receiver<()>, String> {
+fn watch(path: &Path) -> Result<Arc<Gate>, String> {
     let parents = watch_dirs(path)?;
     let names = watch_names(path)?;
     let parents_for_events = parents.clone();
     let (raw_tx, raw_rx) = mpsc::channel();
-    let (tx, rx) = mpsc::channel();
+    let gate = Gate::new();
+    let thread_gate = Arc::clone(&gate);
     let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
         let relevant = match result {
             Ok(event) => event_targets(&event, &parents_for_events, &names),
@@ -679,10 +685,10 @@ fn watch(path: &Path) -> Result<Receiver<()>, String> {
         .name("tgw-view-watch".into())
         .spawn(move || {
             let _watcher: RecommendedWatcher = watcher;
-            debounce(raw_rx, tx);
+            debounce(raw_rx, thread_gate);
         })
         .map_err(|error| error.to_string())?;
-    Ok(rx)
+    Ok(gate)
 }
 
 fn watch_dirs(path: &Path) -> Result<Vec<PathBuf>, String> {
@@ -743,20 +749,113 @@ fn event_targets(event: &Event, parents: &[PathBuf], names: &[OsString]) -> bool
         })
 }
 
-fn debounce(incoming: Receiver<()>, outgoing: mpsc::Sender<()>) {
+fn debounce(incoming: Receiver<()>, gate: Arc<Gate>) {
     while incoming.recv().is_ok() {
         let mut deadline = std::time::Instant::now() + DEBOUNCE;
         while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
             match incoming.recv_timeout(remaining) {
                 Ok(()) => deadline = std::time::Instant::now() + DEBOUNCE,
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    gate.close();
+                    return;
+                }
             }
         }
-        if outgoing.send(()).is_err() {
-            return;
+        gate.signal();
+    }
+    gate.close();
+}
+
+/// A parked watch thread wakes the UI without occupying a worker-pool thread.
+struct Gate {
+    ready: AtomicBool,
+    closed: AtomicBool,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl Gate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            ready: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+            waker: Mutex::new(None),
+        })
+    }
+
+    fn signal(&self) {
+        self.ready.store(true, Ordering::Release);
+        self.wake();
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.wake();
+    }
+
+    fn wake(&self) {
+        if let Some(waker) = lock(&self.waker).take() {
+            waker.wake();
         }
     }
+
+    fn next(&self) -> impl Future<Output = bool> + '_ {
+        poll_fn(move |cx| self.poll_wait(cx))
+    }
+
+    fn poll_wait(&self, cx: &mut TaskContext<'_>) -> Poll<bool> {
+        if self.ready.swap(false, Ordering::AcqRel) {
+            return Poll::Ready(true);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Poll::Ready(false);
+        }
+        *lock(&self.waker) = Some(cx.waker().clone());
+        if self.ready.swap(false, Ordering::AcqRel) {
+            return Poll::Ready(true);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Poll::Ready(false);
+        }
+        Poll::Pending
+    }
+}
+
+fn io_task<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> impl Future<Output = T> {
+    let slot = Arc::new(IoSlot {
+        value: Mutex::new(None),
+        waker: Mutex::new(None),
+    });
+    let worker = Arc::clone(&slot);
+    thread::spawn(move || {
+        let value = work();
+        *lock(&worker.value) = Some(value);
+        if let Some(waker) = lock(&worker.waker).take() {
+            waker.wake();
+        }
+    });
+    poll_fn(move |cx| {
+        if let Some(value) = lock(&slot.value).take() {
+            return Poll::Ready(value);
+        }
+        *lock(&slot.waker) = Some(cx.waker().clone());
+        if let Some(value) = lock(&slot.value).take() {
+            Poll::Ready(value)
+        } else {
+            Poll::Pending
+        }
+    })
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+struct IoSlot<T> {
+    value: Mutex<Option<T>>,
+    waker: Mutex<Option<Waker>>,
 }
 
 struct Fresh {
@@ -810,6 +909,9 @@ fn unreadable(label: &str, error: SourceError) -> String {
 }
 
 fn read_source(path: &Path) -> Result<String, SourceError> {
+    if let Some(settled) = read_settled(path) {
+        return settled;
+    }
     let deadline = std::time::Instant::now() + READ_DEADLINE;
     let mut last_text = None;
     let mut stable_since = None;
@@ -853,6 +955,32 @@ fn read_source(path: &Path) -> Result<String, SourceError> {
         }
         thread::sleep(READ_PAUSE);
     }
+}
+
+/// A file left alone since the last save can be read immediately. Two identical
+/// reads reject a torn in-place write; a fresh modification falls through to
+/// the settle loop.
+fn read_settled(path: &Path) -> Option<Result<String, SourceError>> {
+    if !file_is_settled(path) {
+        return None;
+    }
+    let first = fs::read(path).ok()?;
+    if !file_is_settled(path) {
+        return None;
+    }
+    let second = fs::read(path).ok()?;
+    if first != second || !file_is_settled(path) {
+        return None;
+    }
+    Some(String::from_utf8(first).map_err(|_| SourceError::Utf8))
+}
+
+fn file_is_settled(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age >= READ_SETTLE)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -930,7 +1058,7 @@ struct PaintJob {
     dpr: f32,
     label: Slice,
     wave: Slice,
-    svg: String,
+    svg: Arc<str>,
     renderer: gpui_kit::SvgRenderer,
 }
 
@@ -969,7 +1097,7 @@ fn full_frame(width: f32, height: f32, gutter: f32) -> Frame {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct ViewLayout {
     scale: f32,
     origin_x: f32,
@@ -1438,26 +1566,19 @@ fn raster_slice(
 
 fn slice_svg(svg: &str, x: f32, y: f32, w: f32, h: f32) -> Option<String> {
     let start = svg.find("<svg")?;
-    let end = svg[start..].find('>')? + start;
-    let mut tag = svg[start..=end].to_string();
-    tag = set_attr(&tag, "width", &fmt_num(w));
-    tag = set_attr(&tag, "height", &fmt_num(h));
-    tag = set_attr(
-        &tag,
+    svg[start..].find('>')?;
+    Some(retain_whole_labels(svg, x, y, x + w, y + h, w, h))
+}
+
+fn root_tag(tag: &str, x: f32, y: f32, w: f32, h: f32) -> String {
+    let width = fmt_num(w);
+    let height = fmt_num(h);
+    let view = format!("{} {} {} {}", fmt_num(x), fmt_num(y), width, height);
+    set_attr(
+        &set_attr(&set_attr(tag, "width", &width), "height", &height),
         "viewBox",
-        &format!(
-            "{} {} {} {}",
-            fmt_num(x),
-            fmt_num(y),
-            fmt_num(w),
-            fmt_num(h)
-        ),
-    );
-    let mut out = String::with_capacity(svg.len() + 16);
-    out.push_str(&svg[..start]);
-    out.push_str(&tag);
-    out.push_str(&svg[end + 1..]);
-    Some(retain_whole_labels(&out, x, y, x + w, y + h))
+        &view,
+    )
 }
 
 fn set_attr(tag: &str, name: &str, value: &str) -> String {
@@ -1511,7 +1632,15 @@ struct LabelWindow {
     y1: f32,
 }
 
-fn retain_whole_labels(svg: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> String {
+fn retain_whole_labels(
+    svg: &str,
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    root_w: f32,
+    root_h: f32,
+) -> String {
     let window = LabelWindow { x0, y0, x1, y1 };
     let mut out = String::with_capacity(svg.len());
     let mut stack = vec![TextStyle {
@@ -1546,7 +1675,7 @@ fn retain_whole_labels(svg: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> String 
             if let Some(font) = attr_f32(tag, "font-size") {
                 stack[0].font = font;
             }
-            out.push_str(tag);
+            out.push_str(&root_tag(tag, window.x0, window.y0, root_w, root_h));
             i = tag_end;
             continue;
         }
@@ -1750,16 +1879,24 @@ fn translate_of(tag: &str) -> Option<(f32, f32)> {
 }
 
 fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
-    let key = format!("{name}=\"");
-    let mut rest = tag;
-    while let Some(index) = rest.find(&key) {
-        let boundary = index == 0 || rest.as_bytes()[index - 1].is_ascii_whitespace();
-        if boundary {
-            let start = index + key.len();
-            let end = rest[start..].find('"')?;
-            return Some(&rest[start..start + end]);
+    let bytes = tag.as_bytes();
+    let name = name.as_bytes();
+    if name.is_empty() {
+        return None;
+    }
+    let mut i = 0;
+    while i + name.len() + 2 <= bytes.len() {
+        let boundary = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        if boundary
+            && bytes[i..].starts_with(name)
+            && bytes[i + name.len()] == b'='
+            && bytes[i + name.len() + 1] == b'"'
+        {
+            let start = i + name.len() + 2;
+            let end = tag[start..].find('"')? + start;
+            return Some(&tag[start..end]);
         }
-        rest = &rest[index + key.len()..];
+        i += 1;
     }
     None
 }
@@ -1807,21 +1944,16 @@ fn scrollbar(thumb: (f32, f32), width: f32, height: f32, horizontal: bool) -> gp
 
 fn svg_size(svg: &str) -> Option<(f32, f32)> {
     let tag = &svg[..=svg.find('>')?];
-    let width = svg_attr(tag, "width")?;
-    let height = svg_attr(tag, "height")?;
+    let width = attr_f32(tag, "width")?;
+    let height = attr_f32(tag, "height")?;
     (width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite())
         .then_some((width, height))
-}
-
-fn svg_attr(tag: &str, name: &str) -> Option<f32> {
-    let key = format!("{name}=\"");
-    tag.split_once(&key)?.1.split_once('"')?.0.parse().ok()
 }
 
 #[derive(Default)]
 struct DiagramState {
     source: Option<String>,
-    svg: Option<String>,
+    svg: Option<Arc<str>>,
     fault: Option<Fault>,
     generation: u64,
 }
@@ -1865,7 +1997,7 @@ impl DiagramState {
                 if same_svg {
                     return Step::StatusOnly;
                 }
-                self.svg = Some(svg);
+                self.svg = Some(Arc::from(svg));
                 self.generation += 1;
                 Step::Rendered
             }
@@ -2209,6 +2341,23 @@ mod tests {
         let started = std::time::Instant::now();
         assert!(matches!(read_source(&missing), Err(SourceError::Missing)));
         assert!(started.elapsed() < Duration::from_millis(120));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_source_returns_a_settled_file_without_waiting() {
+        let path = std::env::temp_dir().join(format!("tgw-read-old-{}.tgw", std::process::id()));
+        fs::write(&path, "clk: p\n").unwrap();
+        let file = fs::File::options().write(true).open(&path).unwrap();
+        file.set_times(
+            fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - Duration::from_secs(2)),
+        )
+        .unwrap();
+        drop(file);
+        let started = std::time::Instant::now();
+        assert_eq!(read_source(&path).unwrap(), "clk: p\n");
+        assert!(started.elapsed() < Duration::from_millis(80));
         let _ = fs::remove_file(&path);
     }
 

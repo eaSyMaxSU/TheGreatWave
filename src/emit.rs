@@ -875,10 +875,17 @@ fn tick_counts(xmax: f64, hscale: i32) -> (usize, usize) {
 }
 
 fn series_text(value: f64, dp: usize, fixed: bool) -> String {
+    let mut out = String::new();
+    append_series(&mut out, value, dp, fixed);
+    out
+}
+
+fn append_series(out: &mut String, value: f64, dp: usize, fixed: bool) {
+    use std::fmt::Write;
     if fixed {
-        format_fixed(value, dp)
+        let _ = write!(out, "{value:.precision$}", precision = dp.min(15));
     } else {
-        format_number(value)
+        append_number(out, value);
     }
 }
 
@@ -937,6 +944,7 @@ fn write_ticks(
     // unfiltered indices can alias `every` and accidentally remove every label.
     let stride = period.saturating_mul(minimum.div_ceil(period).max(1));
     let mut opened = false;
+    let mut label = String::new();
     for i in (first..count).step_by(stride) {
         if every != 0.0 && !mod_zero(i as f64 + offset, every) {
             continue;
@@ -947,15 +955,19 @@ fn write_ticks(
                 step,
                 dp,
                 fixed,
-            } => series_text(*offset + *step * i as f64, *dp, *fixed),
-            Tick::Labels(labels) => labels[i].clone(),
+            } => {
+                label.clear();
+                append_series(&mut label, *offset + *step * i as f64, *dp, *fixed);
+                label.as_str()
+            }
+            Tick::Labels(labels) => labels[i].as_str(),
             Tick::Off => unreachable!(),
         };
         if !opened {
             body.extend_from_slice(b"<g fill=\"#64748b\" font-size=\"11\" text-anchor=\"middle\" xml:space=\"preserve\">");
             opened = true;
         }
-        tick_text(body, i as f64 * dx + x0, y, &text);
+        tick_text(body, i as f64 * dx + x0, y, text);
     }
     if opened {
         body.extend_from_slice(b"</g>");
@@ -1045,19 +1057,34 @@ fn mod_zero(n: f64, every: f64) -> bool {
     r.abs() < 1e-9 || (r - every).abs() < 1e-9 || (r + every).abs() < 1e-9
 }
 
-fn format_number(v: f64) -> String {
+fn append_number(out: &mut String, v: f64) {
     if v.is_finite() && v.fract() == 0.0 && v.abs() < 1.0e15 {
-        let mut b = Vec::new();
-        push_i64(&mut b, v.round() as i64);
-        return String::from_utf8(b).unwrap_or_else(|_| "0".to_string());
+        append_i64(out, v.round() as i64);
+        return;
     }
     // Tick values are data, not pixel coordinates: keep their precision rather
     // than applying the SVG coordinate writer's millipixel rounding.
-    v.to_string()
+    use std::fmt::Write;
+    let _ = write!(out, "{v}");
 }
 
-fn format_fixed(v: f64, dp: usize) -> String {
-    format!("{v:.precision$}", precision = dp.min(15))
+fn append_i64(out: &mut String, n: i64) {
+    let mut tmp = [0u8; 20];
+    let mut i = tmp.len();
+    let mut value = n.unsigned_abs();
+    loop {
+        i -= 1;
+        tmp[i] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    if n < 0 {
+        i -= 1;
+        tmp[i] = b'-';
+    }
+    out.push_str(std::str::from_utf8(&tmp[i..]).unwrap_or("0"));
 }
 
 fn write_groups(body: &mut Vec<u8>, doc: &Doc, yhead: i64) {
@@ -1256,7 +1283,9 @@ mod tests {
         let svg = String::from_utf8(out).unwrap();
         assert!(svg.matches("<text ").count() <= 4);
         assert!(svg.contains("0.000000000000000"));
-        assert_eq!(format_number(0.000001), "0.000001");
+        let mut number = String::new();
+        append_number(&mut number, 0.000001);
+        assert_eq!(number, "0.000001");
     }
 
     #[test]
