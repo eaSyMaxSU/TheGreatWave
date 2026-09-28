@@ -136,6 +136,10 @@ struct Viewer {
     pixels_per_point: f32,
     raster_epoch: u64,
     raster_waiting: bool,
+    /// The user dragged the window, so later frames keep that size.
+    user_sized: bool,
+    seen_viewport: Option<(f32, f32)>,
+    hug_request: Option<(f32, f32)>,
 }
 
 impl Viewer {
@@ -160,6 +164,9 @@ impl Viewer {
             pixels_per_point: 1.0,
             raster_epoch: 0,
             raster_waiting: false,
+            user_sized: false,
+            seen_viewport: None,
+            hug_request: None,
         }
     }
 
@@ -270,6 +277,37 @@ impl Viewer {
             self.request_reload(cx);
         }
         cx.notify();
+    }
+
+    fn note_viewport(&mut self, window: &Window) {
+        let viewport = window.viewport_size();
+        let next = (viewport.width.as_f32(), viewport.height.as_f32());
+        if let Some(seen) = self.seen_viewport {
+            let changed = (seen.0 - next.0).abs() > 1.0 || (seen.1 - next.1).abs() > 1.0;
+            let ours = self.hug_request.is_some_and(|requested| {
+                (requested.0 - next.0).abs() < 2.0 && (requested.1 - next.1).abs() < 2.0
+            });
+            if changed && !ours {
+                self.user_sized = true;
+            }
+        }
+        self.seen_viewport = Some(next);
+    }
+
+    /// A short diagram opens snug to the drawing. A size the user chose is kept,
+    /// and the extra room becomes padding.
+    fn hug_window(&mut self, window: &mut Window, layout: &ViewLayout) {
+        if self.user_sized {
+            return;
+        }
+        let viewport = window.viewport_size();
+        let Some(height) = hugged_height(layout, viewport.height.as_f32(), self.state.status().is_some())
+        else {
+            return;
+        };
+        let width = viewport.width.as_f32();
+        self.hug_request = Some((width, height));
+        window.resize(size(px(width), px(height)));
     }
 
     fn sync_layout(&mut self, window: &Window) -> Option<ViewLayout> {
@@ -542,7 +580,11 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.note_viewport(window);
         self.layout = self.sync_layout(window);
+        if let Some(layout) = self.layout.clone() {
+            self.hug_window(window, &layout);
+        }
         self.request_paint(cx);
         let mut column = div()
             .track_focus(&self.focus_handle)
@@ -1155,6 +1197,19 @@ fn choose_scale(svg_w: f32, svg_h: f32, avail_w: f32, avail_h: f32) -> f32 {
 /// centered on the origin — including its `0` — is entirely in the wave pane.
 fn column_seam(gutter: f32) -> f32 {
     (gutter - 7.5).clamp(0.0, gutter)
+}
+
+/// Height of a window that leaves `EDGE` above and below a diagram which does
+/// not fill the viewport. `None` when the height is already tight, or when the
+/// diagram is tall enough to scroll.
+fn hugged_height(layout: &ViewLayout, viewport_h: f32, status: bool) -> Option<f32> {
+    if layout.show_v || layout.origin_y <= EDGE + 1.0 {
+        return None;
+    }
+    let chrome = if layout.show_h { SCROLLBAR } else { 0.0 };
+    let status_h = if status { STATUS_HEIGHT } else { 0.0 };
+    let height = (layout.body_h + EDGE * 2.0 + chrome + status_h).max(200.0);
+    (viewport_h > height + 2.0).then_some(height)
 }
 
 fn layout_diagram(
@@ -1950,6 +2005,14 @@ mod tests {
         assert!((layout.origin_x - right).abs() < 1.0);
         assert!((layout.origin_y - bottom).abs() < 1.0);
         assert!((layout.origin_x - EDGE).abs() < 1.0);
+        let hugged = hugged_height(&layout, 680.0, false).unwrap();
+        assert!(hugged < 680.0);
+        let snug = layout_diagram(&frame, 1040.0, hugged, 0.0, 0.0).unwrap();
+        assert!(!snug.show_h && !snug.show_v);
+        let snug_bottom = hugged - (snug.origin_y + snug.body_h);
+        assert!((snug.origin_y - EDGE).abs() < 1.5, "top {}", snug.origin_y);
+        assert!((snug_bottom - EDGE).abs() < 1.5, "bottom {snug_bottom}");
+        assert!(hugged_height(&snug, hugged, false).is_none());
     }
 
     #[test]
