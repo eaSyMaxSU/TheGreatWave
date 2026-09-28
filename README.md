@@ -50,7 +50,7 @@ The same command works while editing. Save the file and the window updates. `tgw
 cargo run --release --features view --bin tgw-view -- examples/transfer.tgw
 ```
 
-Signal names stay fixed on the left. Tick numbers, the title, and the waveforms scroll together. Drag a scrollbar, click its track, or use the trackpad; hold Shift to move a vertical scroll sideways. A diagram wider than the window scrolls horizontally, and a taller one scrolls vertically. A tick label that would be cut by the edge is omitted until it fits. A diagram that already fits the window is enlarged and has no scrollbar. `@bounds` still limits the time range that is drawn.
+Signal names stay fixed on the left. Tick numbers, the title, and the waveforms scroll together. Drag a scrollbar, click its track, or use the trackpad; hold Shift to move a vertical scroll sideways. A diagram wider than the window scrolls horizontally, and a taller one scrolls vertically. A tick label that would be cut by the edge is omitted until it fits. The picture keeps a small, equal padding on every edge. The horizontal scrollbar appears when the waveform is wider than the window; a taller diagram scrolls vertically. A diagram that fits, including a short clock, is enlarged and stays fully visible. `@bounds` still limits the time range that is drawn.
 
 A syntax error or a missing file keeps the last successful picture and shows `path:line:col: message` until the next good save. Command-W and Command-Q close the window.
 

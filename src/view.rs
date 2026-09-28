@@ -29,6 +29,8 @@ const SOURCE_POLL: Duration = Duration::from_millis(200);
 const MAX_DEVICE_PX: f32 = 8192.0;
 const STATUS_HEIGHT: f32 = 32.0;
 const SCROLLBAR: f32 = 12.0;
+/// Logical pixels of white kept around the drawing on every side.
+const EDGE: f32 = 8.0;
 
 const USAGE: &str = "\
 tgw-view — live timing diagrams
@@ -415,15 +417,15 @@ impl Viewer {
             return;
         };
         let (x, y) = pointer(window, event.position);
-        if layout.show_h && y >= layout.body_h && y < layout.body_h + SCROLLBAR {
-            let local = x - layout.label_w;
+        if layout.show_h && y >= layout.h_bar_y && y < layout.h_bar_y + SCROLLBAR {
+            let local = x - layout.h_bar_x;
             if local >= 0.0 && local < layout.wave_w {
-                self.scroll_bar(ScrollAxis::Horizontal, local, &layout, cx);
+                self.scroll_bar(ScrollAxis::Horizontal, local, x, &layout, cx);
             }
-        } else if layout.show_v && x >= layout.label_w + layout.wave_w {
-            let local = y;
+        } else if layout.show_v && x >= layout.v_bar_x && x < layout.v_bar_x + SCROLLBAR {
+            let local = y - layout.v_bar_y;
             if local >= 0.0 && local < layout.body_h {
-                self.scroll_bar(ScrollAxis::Vertical, local, &layout, cx);
+                self.scroll_bar(ScrollAxis::Vertical, local, y, &layout, cx);
             }
         }
     }
@@ -432,17 +434,17 @@ impl Viewer {
         &mut self,
         axis: ScrollAxis,
         local: f32,
+        pointer_at: f32,
         layout: &ViewLayout,
         cx: &mut Context<Self>,
     ) {
-        let (origin, thumb, track, page, max_scroll, mouse) = match axis {
+        let (origin, thumb, track, page, max_scroll) = match axis {
             ScrollAxis::Horizontal => (
                 layout.h_thumb.0,
                 layout.h_thumb.1,
                 layout.wave_w,
                 layout.wave.w * 0.85,
                 layout.max_x,
-                local + layout.label_w,
             ),
             ScrollAxis::Vertical => (
                 layout.v_thumb.0,
@@ -450,7 +452,6 @@ impl Viewer {
                 layout.body_h,
                 layout.wave.h * 0.85,
                 layout.max_y,
-                local,
             ),
         };
         if max_scroll <= 0.0 {
@@ -463,7 +464,7 @@ impl Viewer {
             };
             self.drag = Some(ScrollDrag {
                 axis,
-                origin_mouse: mouse,
+                origin_mouse: pointer_at,
                 origin_scroll: scroll,
                 travel: (track - thumb).max(1.0),
                 max_scroll,
@@ -555,41 +556,39 @@ impl Render for Viewer {
             .size_full()
             .flex()
             .flex_col()
+            .relative()
             .bg(rgb(0x00ffffff));
         if let Some(layout) = self.layout.clone() {
-            let mut row = div()
-                .w_full()
+            let picture = div()
+                .absolute()
+                .left(px(layout.origin_x))
+                .top(px(layout.origin_y))
+                .w(px(layout.label_w + layout.wave_w))
                 .h(px(layout.body_h))
                 .flex()
                 .flex_row()
                 .flex_none()
                 .child(self.pane(self.labels.as_ref(), layout.label_w, layout.body_h))
                 .child(self.pane(self.waves.as_ref(), layout.wave_w, layout.body_h));
+            column = column.child(picture);
             if layout.show_v {
-                row = row.child(scrollbar(layout.v_thumb, SCROLLBAR, layout.body_h, false));
+                column = column.child(
+                    div()
+                        .absolute()
+                        .left(px(layout.v_bar_x))
+                        .top(px(layout.v_bar_y))
+                        .child(scrollbar(layout.v_thumb, SCROLLBAR, layout.body_h, false)),
+                );
             }
-            let mut stack = div().w_full().flex().flex_col().flex_none().child(row);
             if layout.show_h {
-                let mut bars = div()
-                    .w_full()
-                    .h(px(SCROLLBAR))
-                    .flex()
-                    .flex_row()
-                    .flex_none()
-                    .child(div().w(px(layout.label_w)).h(px(SCROLLBAR)).flex_none())
-                    .child(scrollbar(layout.h_thumb, layout.wave_w, SCROLLBAR, true));
-                if layout.show_v {
-                    bars = bars.child(
-                        div()
-                            .w(px(SCROLLBAR))
-                            .h(px(SCROLLBAR))
-                            .flex_none()
-                            .bg(rgb(0x00e2e8f0)),
-                    );
-                }
-                stack = stack.child(bars);
+                column = column.child(
+                    div()
+                        .absolute()
+                        .left(px(layout.h_bar_x))
+                        .top(px(layout.h_bar_y))
+                        .child(scrollbar(layout.h_thumb, layout.wave_w, SCROLLBAR, true)),
+                );
             }
-            column = column.child(stack);
         } else {
             column = column.child(div().flex_1());
         }
@@ -908,11 +907,31 @@ struct Frame {
     width: f32,
     height: f32,
     gutter: f32,
+    /// Ink of the drawing, in SVG units. The outer SVG margin is not included.
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+}
+
+#[cfg(test)]
+fn full_frame(width: f32, height: f32, gutter: f32) -> Frame {
+    Frame {
+        width,
+        height,
+        gutter,
+        x0: 0.0,
+        y0: 0.0,
+        x1: width,
+        y1: height,
+    }
 }
 
 #[derive(Clone)]
 struct ViewLayout {
     scale: f32,
+    origin_x: f32,
+    origin_y: f32,
     label_w: f32,
     wave_w: f32,
     body_h: f32,
@@ -926,6 +945,10 @@ struct ViewLayout {
     wave: Slice,
     h_thumb: (f32, f32),
     v_thumb: (f32, f32),
+    h_bar_x: f32,
+    h_bar_y: f32,
+    v_bar_x: f32,
+    v_bar_y: f32,
 }
 
 fn diagram_frame(svg: &str) -> Option<Frame> {
@@ -935,13 +958,179 @@ fn diagram_frame(svg: &str) -> Option<Frame> {
     let key = "transform=\"translate(";
     let trans = rest.find(key)?;
     let nums = &rest[trans + key.len()..];
-    let x: f32 = nums.split([',', ')', ' ']).next()?.trim().parse().ok()?;
+    let mut parts = nums
+        .split([',', ')', ' '])
+        .map(str::trim)
+        .filter(|part| !part.is_empty());
+    let x: f32 = parts.next()?.parse().ok()?;
+    let y: f32 = parts.next()?.parse().ok()?;
     let gutter = (x - 0.5).max(0.0);
+    let (x0, y0, x1, y1) = content_bounds(svg, x, y, width, height);
     (gutter < width).then_some(Frame {
         width,
         height,
         gutter,
+        x0,
+        y0,
+        x1,
+        y1,
     })
+}
+
+/// Visible drawing, excluding the SVG's outer margin. Text uses the same ink
+/// estimate as label clipping, so a glyph kept in the bounds is kept on screen.
+fn content_bounds(svg: &str, ox: f32, oy: f32, width: f32, height: f32) -> (f32, f32, f32, f32) {
+    let mut bounds: Option<(f32, f32, f32, f32)> = None;
+    let mut include = |left: f32, top: f32, right: f32, bottom: f32| {
+        if !(right > left && bottom > top) {
+            return;
+        }
+        bounds = Some(match bounds {
+            Some((x0, y0, x1, y1)) => (x0.min(left), y0.min(top), x1.max(right), y1.max(bottom)),
+            None => (left, top, right, bottom),
+        });
+    };
+    if let Some((left, top, right, bottom)) = plot_clip_box(svg) {
+        include(ox + left, oy + top, ox + right, oy + bottom);
+    }
+    include_brackets(svg, &mut include);
+    include_text(svg, &mut include);
+    let Some((left, top, right, bottom)) = bounds else {
+        return (0.0, 0.0, width, height);
+    };
+    let x0 = (left - 1.0).clamp(0.0, width);
+    let y0 = (top - 1.0).clamp(0.0, height);
+    let x1 = (right + 1.0).clamp(x0 + 1.0, width.max(x0 + 1.0));
+    let y1 = (bottom + 1.0).clamp(y0 + 1.0, height.max(y0 + 1.0));
+    if x1 - x0 < 8.0 || y1 - y0 < 8.0 {
+        (0.0, 0.0, width, height)
+    } else {
+        (x0, y0, x1, y1)
+    }
+}
+
+fn plot_clip_box(svg: &str) -> Option<(f32, f32, f32, f32)> {
+    let at = svg.find("plot-clip\"")?;
+    let rest = &svg[at..];
+    let rect = rest.find("<rect ")?;
+    let tag_end = rest[rect..].find('>')?;
+    let tag = &rest[rect..rect + tag_end + 1];
+    let x = attr_f32(tag, "x")?;
+    let y = attr_f32(tag, "y")?;
+    let w = attr_f32(tag, "width")?;
+    let h = attr_f32(tag, "height")?;
+    Some((x, y, x + w, y + h))
+}
+
+fn include_brackets(svg: &str, include: &mut impl FnMut(f32, f32, f32, f32)) {
+    let mut rest = svg;
+    while let Some(index) = rest.find("stroke=\"#0041c4\"") {
+        let after = &rest[index..];
+        if let Some(path) = after.find("d=\"M") {
+            let nums = &after[path + 4..];
+            if let Some((x, y, h)) = bracket_geom(nums) {
+                include(x - 5.0, y, x + 1.0, y + h + 10.0);
+            }
+        }
+        rest = &rest[index + 16..];
+    }
+}
+
+fn bracket_geom(nums: &str) -> Option<(f32, f32, f32)> {
+    let (x, rest) = split_num(nums)?;
+    let (y, rest) = split_num(rest)?;
+    let mark = "l 0,";
+    let drop = rest.find(mark)?;
+    let (h, _) = split_num(&rest[drop + mark.len()..])?;
+    Some((x, y, h))
+}
+
+fn split_num(text: &str) -> Option<(f32, &str)> {
+    let text = text.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+    let end = text
+        .find(|c: char| c == ',' || c.is_whitespace())
+        .unwrap_or(text.len());
+    let value = text[..end].parse().ok()?;
+    Some((value, &text[end..]))
+}
+
+fn include_text(svg: &str, include: &mut impl FnMut(f32, f32, f32, f32)) {
+    let mut stack = vec![TextStyle {
+        x: 0.0,
+        y: 0.0,
+        vertical: false,
+        anchor: TextAnchor::Start,
+        font: 12.0,
+    }];
+    let mut i = 0;
+    while i < svg.len() {
+        if !svg[i..].starts_with('<') {
+            i = svg[i..].find('<').map_or(svg.len(), |offset| i + offset);
+            continue;
+        }
+        if svg[i..].starts_with("</g>") {
+            if stack.len() > 1 {
+                stack.pop();
+            }
+            i += 4;
+            continue;
+        }
+        let Some(tag_end) = svg[i..].find('>').map(|offset| i + offset + 1) else {
+            break;
+        };
+        let tag = &svg[i..tag_end];
+        if tag_name_is(tag, "svg") {
+            if let Some(font) = attr_f32(tag, "font-size") {
+                stack[0].font = font;
+            }
+            i = tag_end;
+            continue;
+        }
+        if tag_name_is(tag, "g") {
+            let parent = stack.last().copied().unwrap_or(TextStyle {
+                x: 0.0,
+                y: 0.0,
+                vertical: false,
+                anchor: TextAnchor::Start,
+                font: 12.0,
+            });
+            if let Some(pill_end) = label_pill_end(svg, tag_end) {
+                let style = style_after_group(parent, tag);
+                if let Some(text_at) = svg[tag_end..pill_end].find("<text") {
+                    let element = &svg[tag_end + text_at..pill_end];
+                    if let Some(span) = text_span(element, style) {
+                        include(span.0, span.1, span.2, span.3);
+                    }
+                }
+                i = pill_end;
+                continue;
+            }
+            stack.push(style_after_group(parent, tag));
+            i = tag_end;
+            continue;
+        }
+        if tag_name_is(tag, "text") {
+            let Some(text_end) = svg[tag_end..]
+                .find("</text>")
+                .map(|offset| tag_end + offset + "</text>".len())
+            else {
+                break;
+            };
+            let style = stack.last().copied().unwrap_or(TextStyle {
+                x: 0.0,
+                y: 0.0,
+                vertical: false,
+                anchor: TextAnchor::Start,
+                font: 12.0,
+            });
+            if let Some(span) = text_span(&svg[i..text_end], style) {
+                include(span.0, span.1, span.2, span.3);
+            }
+            i = text_end;
+            continue;
+        }
+        i = tag_end;
+    }
 }
 
 fn choose_scale(svg_w: f32, svg_h: f32, avail_w: f32, avail_h: f32) -> f32 {
@@ -949,9 +1138,12 @@ fn choose_scale(svg_w: f32, svg_h: f32, avail_w: f32, avail_h: f32) -> f32 {
         return 1.0;
     }
     let fit = (avail_w / svg_w).min(avail_h / svg_h);
+    // The waveform fits the window, so every cycle stays on screen.
     if fit >= 1.0 {
         return fit;
     }
+    // The time axis is longer than the window. Grow with the window height so
+    // a cycle stays readable, and let the extra width scroll.
     if svg_h <= avail_h {
         return avail_h / svg_h;
     }
@@ -975,7 +1167,17 @@ fn layout_diagram(
     if !(frame.width > 0.0 && frame.height > 0.0 && view_w >= 1.0 && view_h >= 1.0) {
         return None;
     }
-    let seam = column_seam(frame.gutter);
+    let x0 = frame.x0.clamp(0.0, frame.width);
+    let y0 = frame.y0.clamp(0.0, frame.height);
+    let x1 = frame.x1.clamp(x0 + 1.0, frame.width.max(x0 + 1.0));
+    let y1 = frame.y1.clamp(y0 + 1.0, frame.height.max(y0 + 1.0));
+    let seam = column_seam(frame.gutter).clamp(x0, x1);
+    let label_span = (seam - x0).max(0.0);
+    let wave_span = (x1 - seam).max(1.0);
+    let content_w = (label_span + wave_span).max(1.0);
+    let content_h = (y1 - y0).max(1.0);
+    let edge_x = EDGE.min(view_w / 8.0);
+    let edge_y = EDGE.min(view_h / 8.0);
     let mut show_h = false;
     let mut show_v = false;
     let mut scale = 1.0;
@@ -983,41 +1185,52 @@ fn layout_diagram(
     let mut wave_w = 0.0;
     let mut body_h = 0.0;
     for _ in 0..4 {
-        let avail_w = (view_w - if show_v { SCROLLBAR } else { 0.0 }).max(1.0);
-        let avail_h = (view_h - if show_h { SCROLLBAR } else { 0.0 }).max(1.0);
-        scale = choose_scale(frame.width, frame.height, avail_w, avail_h);
-        let natural = seam * scale;
-        label_w = if natural + 64.0 <= avail_w {
+        let inner_w = (view_w - edge_x * 2.0 - if show_v { SCROLLBAR } else { 0.0 }).max(1.0);
+        let inner_h = (view_h - edge_y * 2.0 - if show_h { SCROLLBAR } else { 0.0 }).max(1.0);
+        scale = choose_scale(content_w, content_h, inner_w, inner_h);
+        let natural = label_span * scale;
+        label_w = if natural + 64.0 <= inner_w {
             natural
         } else {
-            (avail_w - 64.0).max(0.0)
+            (inner_w - 64.0).max(0.0)
         };
-        wave_w = (avail_w - label_w).max(1.0);
-        body_h = avail_h;
-        let next_h = (frame.width - seam).max(0.0) * scale > wave_w + 1.0;
-        let next_v = frame.height * scale > body_h + 1.0;
+        let wave_px = wave_span * scale;
+        let height_px = content_h * scale;
+        let next_h = wave_px > (inner_w - label_w) + 1.0;
+        let next_v = height_px > inner_h + 1.0;
+        wave_w = if next_h {
+            (inner_w - label_w).max(1.0)
+        } else {
+            wave_px.max(1.0)
+        };
+        body_h = if next_v { inner_h } else { height_px.max(1.0) };
         if next_h == show_h && next_v == show_v {
             break;
         }
         show_h = next_h;
         show_v = next_v;
     }
+    let bar_v = if show_v { SCROLLBAR } else { 0.0 };
+    let bar_h = if show_h { SCROLLBAR } else { 0.0 };
+    let inner_w = (view_w - edge_x * 2.0 - bar_v).max(1.0);
+    let inner_h = (view_h - edge_y * 2.0 - bar_h).max(1.0);
+    let origin_x = edge_x + (inner_w - (label_w + wave_w)).max(0.0) / 2.0;
+    let origin_y = edge_y + (inner_h - body_h).max(0.0) / 2.0;
     let view_svg_w = wave_w / scale;
     let view_svg_h = body_h / scale;
-    let max_x = ((frame.width - seam) - view_svg_w).max(0.0);
-    let max_y = (frame.height - view_svg_h).max(0.0);
+    let max_x = (wave_span - view_svg_w).max(0.0);
+    let max_y = (content_h - view_svg_h).max(0.0);
     let scroll_x = scroll_x.clamp(0.0, max_x);
     let scroll_y = scroll_y.clamp(0.0, max_y);
-    let label_svg_w = (label_w / scale).min(seam).max(0.0);
-    let label_x = (seam - label_svg_w).max(0.0);
-    let wave_w_svg = view_svg_w
-        .min((frame.width - seam - scroll_x).max(0.0))
-        .max(0.0);
-    let body_svg_h = view_svg_h.min((frame.height - scroll_y).max(0.0)).max(0.0);
-    let content_w = (frame.width - seam).max(0.0) * scale;
-    let content_h = frame.height * scale;
+    let label_svg_w = (label_w / scale).min(label_span).max(0.0);
+    let label_x = (seam - label_svg_w).max(x0);
+    let wave_w_svg = view_svg_w.min((x1 - seam - scroll_x).max(0.0)).max(0.0);
+    let body_svg_h = view_svg_h.min((content_h - scroll_y).max(0.0)).max(0.0);
+    let y = y0 + scroll_y;
     Some(ViewLayout {
         scale,
+        origin_x,
+        origin_y,
         label_w,
         wave_w,
         body_h,
@@ -1029,18 +1242,22 @@ fn layout_diagram(
         scroll_y,
         label: Slice {
             x: label_x,
-            y: scroll_y,
+            y,
             w: label_svg_w,
             h: body_svg_h,
         },
         wave: Slice {
             x: seam + scroll_x,
-            y: scroll_y,
+            y,
             w: wave_w_svg,
             h: body_svg_h,
         },
-        h_thumb: thumb(wave_w, wave_w, content_w, scroll_x * scale),
-        v_thumb: thumb(body_h, body_h, content_h, scroll_y * scale),
+        h_thumb: thumb(wave_w, wave_w, wave_span * scale, scroll_x * scale),
+        v_thumb: thumb(body_h, body_h, content_h * scale, scroll_y * scale),
+        h_bar_x: origin_x + label_w,
+        h_bar_y: view_h - SCROLLBAR,
+        v_bar_x: view_w - SCROLLBAR,
+        v_bar_y: origin_y,
     })
 }
 
@@ -1389,8 +1606,18 @@ fn style_after_group(mut style: TextStyle, tag: &str) -> TextStyle {
     style
 }
 
-fn text_fits(element: &str, mut style: TextStyle, window: LabelWindow) -> bool {
-    let tag_end = element.find('>').unwrap_or(element.len());
+fn text_fits(element: &str, style: TextStyle, window: LabelWindow) -> bool {
+    let Some((left, top, right, bottom)) = text_span(element, style) else {
+        return true;
+    };
+    left >= window.x0 - 0.5
+        && right <= window.x1 + 0.5
+        && top >= window.y0 - 0.5
+        && bottom <= window.y1 + 0.5
+}
+
+fn text_span(element: &str, mut style: TextStyle) -> Option<(f32, f32, f32, f32)> {
+    let tag_end = element.find('>')?;
     let tag = &element[..tag_end];
     if let Some(font) = attr_f32(tag, "font-size") {
         style.font = font;
@@ -1400,16 +1627,24 @@ fn text_fits(element: &str, mut style: TextStyle, window: LabelWindow) -> bool {
     }
     let local_x = attr_f32(tag, "x").unwrap_or(0.0);
     let local_y = attr_f32(tag, "y").unwrap_or(0.0);
-    let content_at = element.find('>').map_or(element.len(), |index| index + 1);
+    let content_at = tag_end + 1;
     let content_end = element.rfind("</text>").unwrap_or(element.len());
+    if content_end < content_at {
+        return None;
+    }
     let content = &element[content_at..content_end];
-    let ink = label_ink(content, style.font, attr_f32(tag, "textLength"));
-    let (left, right, top, bottom) = if style.vertical {
+    let ink = label_ink(
+        content,
+        style.font,
+        attr_f32(tag, "textLength"),
+        style.anchor,
+    );
+    Some(if style.vertical {
         let half = style.font * 0.8;
         (
             style.x - half,
-            style.x + half,
             style.y - ink / 2.0,
+            style.x + half,
             style.y + ink / 2.0,
         )
     } else {
@@ -1420,20 +1655,22 @@ fn text_fits(element: &str, mut style: TextStyle, window: LabelWindow) -> bool {
             TextAnchor::Middle => (x - ink / 2.0, x + ink / 2.0),
             TextAnchor::End => (x - ink, x),
         };
-        (left, right, y - style.font * 0.8, y + style.font * 0.25)
-    };
-    left >= window.x0 - 0.5
-        && right <= window.x1 + 0.5
-        && top >= window.y0 - 0.5
-        && bottom <= window.y1 + 0.5
+        (left, y - style.font * 0.8, right, y + style.font * 0.3)
+    })
 }
 
-fn label_ink(text: &str, font: f32, text_length: Option<f32>) -> f32 {
+fn label_ink(text: &str, font: f32, text_length: Option<f32>, anchor: TextAnchor) -> f32 {
     if let Some(length) = text_length.filter(|length| *length > 0.0) {
         return length;
     }
     let measured = tgw::text_width(text, f64::from(font.max(1.0))) as f32;
-    (measured * 1.12 + 1.0).max(font * 0.4)
+    // Names are end-aligned, so a loose width estimate becomes empty space on
+    // the left only. Keep that estimate close to the drawn glyph. Tick labels
+    // stay a little wide so a slice never keeps a number it would cut in half.
+    match anchor {
+        TextAnchor::End => (measured * 0.90).max(font * 0.35),
+        _ => (measured * 1.12 + 1.0).max(font * 0.4),
+    }
 }
 
 fn parse_anchor(value: &str) -> TextAnchor {
@@ -1690,11 +1927,7 @@ mod tests {
 
     #[test]
     fn wide_diagram_scrolls_horizontally_at_a_readable_scale() {
-        let frame = Frame {
-            width: 4000.0,
-            height: 220.0,
-            gutter: 120.0,
-        };
+        let frame = full_frame(4000.0, 220.0, 120.0);
         let layout = layout_diagram(&frame, 1000.0, 600.0, 0.0, 0.0).unwrap();
         assert!(layout.scale >= 1.0);
         assert!(layout.show_h);
@@ -1704,27 +1937,24 @@ mod tests {
     }
 
     #[test]
-    fn small_diagram_fits_without_scrollbars() {
-        let frame = Frame {
-            width: 540.0,
-            height: 296.0,
-            gutter: 120.0,
-        };
+    fn short_diagram_stays_whole_without_a_scrollbar() {
+        let frame = full_frame(540.0, 296.0, 120.0);
         let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
         assert!(layout.scale > 1.0);
         assert!(!layout.show_h);
         assert!(!layout.show_v);
         assert!(layout.max_x < 0.05);
         assert!(layout.max_y < 0.05);
+        let right = 1040.0 - (layout.origin_x + layout.label_w + layout.wave_w);
+        let bottom = 680.0 - (layout.origin_y + layout.body_h);
+        assert!((layout.origin_x - right).abs() < 1.0);
+        assert!((layout.origin_y - bottom).abs() < 1.0);
+        assert!((layout.origin_x - EDGE).abs() < 1.0);
     }
 
     #[test]
     fn tall_diagram_scrolls_vertically_without_shrinking() {
-        let frame = Frame {
-            width: 400.0,
-            height: 900.0,
-            gutter: 80.0,
-        };
+        let frame = full_frame(400.0, 900.0, 80.0);
         let layout = layout_diagram(&frame, 800.0, 500.0, 0.0, 0.0).unwrap();
         assert!((layout.scale - 1.0).abs() < 0.01);
         assert!(layout.show_v);
@@ -1785,7 +2015,6 @@ mod tests {
         let short = tgw::render(include_str!("../examples/transfer.tgw")).unwrap();
         let short_frame = diagram_frame(&short).unwrap();
         let full = layout_diagram(&short_frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
-        assert!(!full.show_h);
         let full_waves =
             slice_svg(&short, full.wave.x, full.wave.y, full.wave.w, full.wave.h).unwrap();
         let full_labels = slice_svg(
@@ -1811,18 +2040,52 @@ mod tests {
         assert!(head.contains("height=\"20.000\""));
         assert!(head.contains("viewBox=\"10.000 2.000 30.000 20.000\""));
         assert!(sliced.contains("<rect width=\"100\" height=\"40\""));
-        assert!(layout_diagram(
-            &Frame {
-                width: 10.0,
-                height: 10.0,
-                gutter: 2.0,
-            },
-            0.0,
-            100.0,
-            0.0,
-            0.0,
-        )
-        .is_none());
+        assert!(layout_diagram(&full_frame(10.0, 10.0, 2.0), 0.0, 100.0, 0.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn drawing_keeps_the_same_padding_on_every_edge() {
+        let short = tgw::render(include_str!("../examples/transfer.tgw")).unwrap();
+        let frame = diagram_frame(&short).unwrap();
+        assert!(frame.x0 > 12.0, "left gutter blank should be cropped");
+        assert!(frame.y0 > 8.0, "top margin should be cropped");
+        assert!(
+            frame.y1 < frame.height - 8.0,
+            "bottom margin should be cropped"
+        );
+        let fitted = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+        assert!(
+            !fitted.show_h && !fitted.show_v,
+            "a short clock is fully visible"
+        );
+        let right = 1040.0 - (fitted.origin_x + fitted.label_w + fitted.wave_w);
+        let bottom = 680.0 - (fitted.origin_y + fitted.body_h);
+        assert!(
+            (fitted.origin_x - right).abs() < 1.0,
+            "left {}",
+            fitted.origin_x
+        );
+        assert!(
+            (fitted.origin_y - bottom).abs() < 1.0,
+            "top {}",
+            fitted.origin_y
+        );
+        assert!((fitted.origin_x.min(fitted.origin_y) - EDGE).abs() < 1.0);
+
+        let long = tgw::render(&format!(
+            "@title Clock\n@tick 0\nclk: p{}\n",
+            ".".repeat(80)
+        ))
+        .unwrap();
+        let frame = diagram_frame(&long).unwrap();
+        let scrolled = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+        assert!(scrolled.show_h);
+        let right = 1040.0 - (scrolled.origin_x + scrolled.label_w + scrolled.wave_w);
+        let bottom = scrolled.h_bar_y - (scrolled.origin_y + scrolled.body_h);
+        assert!((scrolled.origin_x - EDGE).abs() < 1.0);
+        assert!((scrolled.origin_y - EDGE).abs() < 1.0);
+        assert!((right - EDGE).abs() < 1.0, "right pad {right}");
+        assert!((bottom - EDGE).abs() < 1.0, "bottom pad {bottom}");
     }
 
     #[test]
