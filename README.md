@@ -1,6 +1,6 @@
 # The Great Wave
 
-`tgw` turns readable timing diagrams into compact, self-contained SVGs. Write aligned signals in a `.tgw` file; there are no braces, commas, or repeated `name`/`wave` keys. The C library and CLI use only the C standard library.
+`tgw` turns readable timing diagrams into compact, self-contained SVGs. Write aligned signals in a `.tgw` file; there are no braces, commas, or repeated `name`/`wave` keys. The Rust library and CLI have no dependencies.
 
 ```text
 @title Bus transfer
@@ -18,9 +18,9 @@ acknowledge: 1.....|01.
 ## Use
 
 ```sh
-make
-./build/tgw examples/transfer.tgw -o transfer.svg
-./build/tgw < examples/transfer.tgw > transfer.svg
+cargo build --release
+./target/release/tgw examples/transfer.tgw -o transfer.svg
+./target/release/tgw < examples/transfer.tgw > transfer.svg
 ```
 
 `-i/--input` also selects an input file; `-o/--output` writes a file. Omit the input, or use `-`, to read stdin. `--indent 2` formats the SVG. `--help` lists all options. Errors include the source line and column.
@@ -28,7 +28,7 @@ make
 Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automatically, or selected with `--format tgw|json5|auto`. Convert old diagrams once:
 
 ```sh
-./build/tgw old-diagram.json5 --convert -o diagram.tgw
+./target/release/tgw old-diagram.json5 --convert -o diagram.tgw
 ```
 
 `--convert` also formats native diagrams with aligned waveform columns. Conversion preserves supported diagram data; comments and unsupported JSON properties are omitted.
@@ -94,49 +94,42 @@ Register and assign diagrams are outside the supported format. WaveJSON uses the
 
 Clocks use shared, padded SVG patterns with complete arrowheads and consistent stroke weight. Bus transitions meet at the same crossing, labels center on the visible value, and gap marks clear the trace underneath. SVGs include a title, description, document-scoped paint IDs, and no global CSS, so different diagrams can be embedded on the same page.
 
-Rendering scales with source length and visible runs. A 10,000-cycle clock is still one clock pattern and a constant number of drawing elements. Repeated holds remain one stroke. Horizontal cropping skips hidden geometry, including annotations, instead of emitting an entire long diagram. `tgw_render` reuses the caller's output allocation. Fonts use system fallbacks; metrics reserve space conservatively, so appearance may vary slightly between platforms.
+Rendering scales with source length and visible runs. A 10,000-cycle clock is still one clock pattern and a constant number of drawing elements. Repeated holds remain one stroke. Horizontal cropping skips hidden geometry, including annotations, instead of emitting an entire long diagram. `render_into` reuses the caller's output allocation. Fonts use system fallbacks; metrics reserve space conservatively, so appearance may vary slightly between platforms.
 
 Run the warmed-buffer benchmark for median and p95 timings, SVG sizes, and native/JSON5 comparisons:
 
 ```sh
-make bench
+cargo run --release --example long_wave
 ```
 
 ## Library
 
-```c
-#include "tgw.h"
-
-#include <string.h>
-
-const char *src = "clk: P...\ndata: x3.4 => ready done";
-TgwBuf svg = {0};
-TgwError error;
-if (tgw_render(src, strlen(src), &svg, 0, TGW_AUTO, &error)) {
-    /* error.message and error.offset */
-}
-const char *again = "clk: p...";
-tgw_render(again, strlen(again), &svg, 0, TGW_AUTO, &error); /* reuses svg.cap */
-
-const char *json = "{signal:[{name:'clk',wave:'p...'}]}";
-TgwBuf text = {0};
-tgw_convert(json, strlen(json), &text, TGW_AUTO, &error);
-tgw_buf_free(&svg);
-tgw_buf_free(&text);
+```rust
+let svg = tgw::render("clk: P...\ndata: x3.4 => ready done")?;
+let mut buffer = Vec::new();
+tgw::render_into("clk: p...", &mut buffer)?;
+let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
+# Ok::<(), tgw::Error>(())
 ```
 
-`tgw_render` takes an indent of 0–255 spaces. `TGW_AUTO`, `TGW_TGW`, and `TGW_JSON5` select the input syntax; `tgw_convert` uses the same format argument. On failure the output length is cleared and the allocation is kept. Invalid paths, excessive nesting, nonfinite timing, and out-of-range geometry return errors.
+`render_opts` adds SVG indentation; `render_with_format` selects `InputFormat::Auto`, `Tgw`, or `Json5`. `to_tgw_with_format` does the same for conversion. Rendering clears the output buffer on an error. Invalid paths, excessive nesting, nonfinite timing, and out-of-range geometry return errors.
 
 ## Checks
 
 ```sh
-make test
-make asan
+cargo test
+cargo test --release
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
 ```
 
-The native fixtures in `tests/fixtures` are compared, byte for byte, with the committed SVGs and with their legacy JSON5 sources in `tests/fixtures/legacy`. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals.
+The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals. SVG snapshots only change on explicit request:
 
-Optional browser QA uses Playwright installed separately:
+```sh
+UPDATE_SNAPSHOTS=1 cargo test --test render snapshots
+```
+
+Optional browser QA uses Playwright installed separately from the Rust project:
 
 ```sh
 node scripts/visual-check.cjs /tmp/tgw-visual
