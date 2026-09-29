@@ -59,7 +59,7 @@ impl Job {
             if !parent.is_dir() {
                 return Err(format!("{}: directory is missing", parent.display()));
             }
-            if same_file(&input, output) {
+            if crate::same_file(&input, output) {
                 return Err(format!(
                     "{}: the output would overwrite the diagram",
                     output.display()
@@ -206,23 +206,6 @@ fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     fs::write(&target, bytes)
 }
 
-fn same_file(a: &Path, b: &Path) -> bool {
-    fn resolve(path: &Path) -> Option<PathBuf> {
-        if let Ok(path) = path.canonicalize() {
-            return Some(path);
-        }
-        let parent = match path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent,
-            _ => Path::new("."),
-        };
-        Some(parent.canonicalize().ok()?.join(path.file_name()?))
-    }
-    match (resolve(a), resolve(b)) {
-        (Some(a), Some(b)) => a == b,
-        _ => a == b,
-    }
-}
-
 /// A closed stderr pipe must not panic the process that is still rewriting the file.
 fn say(message: impl std::fmt::Display) {
     let _ = writeln!(io::stderr().lock(), "{message}");
@@ -343,7 +326,7 @@ fn watch_dirs(path: &Path) -> Result<Vec<PathBuf>, String> {
             .filter(|parent| parent.is_dir())
     }) {
         let parent = parent.canonicalize().unwrap_or(parent);
-        if !dirs.iter().any(|dir| dir == &parent) {
+        if !dirs.iter().any(|dir| crate::paths_equal(dir, &parent)) {
             dirs.push(parent);
         }
     }
@@ -372,7 +355,11 @@ fn watch_names(path: &Path) -> Result<Vec<OsString>, String> {
         canonical
             .file_name()
             .map(|name| name.to_os_string())
-            .filter(|name| !names.iter().any(|existing| existing == name))
+            .filter(|name| {
+                !names
+                    .iter()
+                    .any(|existing| crate::paths_equal(Path::new(existing), Path::new(name)))
+            })
     }) {
         names.push(name);
     }
@@ -385,10 +372,12 @@ fn event_targets(event: &Event, parents: &[PathBuf], names: &[OsString]) -> bool
     }
     event.paths.is_empty()
         || event.paths.iter().any(|path| {
-            names
+            names.iter().any(|name| {
+                path.file_name()
+                    .is_some_and(|file| crate::paths_equal(Path::new(file), Path::new(name)))
+            }) || parents
                 .iter()
-                .any(|name| path.file_name() == Some(name.as_os_str()))
-                || parents.iter().any(|parent| parent == path)
+                .any(|parent| crate::paths_equal(parent, path))
         })
 }
 
@@ -623,17 +612,10 @@ pub(crate) fn source_stamp(path: &Path) -> Option<SourceStamp> {
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|time| time.as_nanos())
         .unwrap_or(0);
-    #[cfg(unix)]
-    let identity = {
-        use std::os::unix::fs::MetadataExt;
-        ((meta.dev() as u128) << 64) | (meta.ino() as u128)
-    };
-    #[cfg(not(unix))]
-    let identity = 0;
     Some(SourceStamp {
         len: meta.len(),
         modified,
-        identity,
+        identity: crate::file_identity(path).unwrap_or(0),
     })
 }
 

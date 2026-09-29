@@ -285,25 +285,11 @@ fn render_file(source: &str, format: InputFormat, indent: u8) -> Result<Vec<u8>,
 }
 
 /// True when writing `output` would truncate the diagram, including through a
-/// different path, a symlink, or a hard link.
-fn same_file(input: &Path, output: &Path) -> bool {
-    if let (Ok(left), Ok(right)) = (fs::metadata(input), fs::metadata(output)) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt;
-            if left.dev() == right.dev() && left.ino() == right.ino() {
-                return true;
-            }
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::MetadataExt;
-            if left.file_index().is_some()
-                && left.file_index() == right.file_index()
-                && left.volume_serial_number() == right.volume_serial_number()
-            {
-                return true;
-            }
+/// different path, a symlink, a hard link, or another case on Windows.
+pub(crate) fn same_file(input: &Path, output: &Path) -> bool {
+    if let (Some(left), Some(right)) = (file_identity(input), file_identity(output)) {
+        if left == right {
+            return true;
         }
     }
     fn resolve(path: &Path) -> Option<PathBuf> {
@@ -317,9 +303,137 @@ fn same_file(input: &Path, output: &Path) -> bool {
         Some(parent.canonicalize().ok()?.join(path.file_name()?))
     }
     match (resolve(input), resolve(output)) {
-        (Some(input), Some(output)) => input == output,
-        _ => input == output,
+        (Some(input), Some(output)) => paths_equal(&input, &output),
+        _ => paths_equal(input, output),
     }
+}
+
+/// Device and file id, so a replaced file is distinct even when its size and
+/// timestamp are unchanged. `None` when the path cannot be opened.
+pub(crate) fn file_identity(path: &Path) -> Option<u128> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(path).ok()?;
+        Some(((meta.dev() as u128) << 64) | meta.ino() as u128)
+    }
+    #[cfg(windows)]
+    {
+        windows_file_id(path)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// Path equality, ignoring ASCII-and-Unicode case on Windows.
+pub(crate) fn paths_equal(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        windows_paths_equal(left, right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+/// `GetFileInformationByHandle` is the stable way to read the file index.
+/// `MetadataExt::file_index` is still nightly-only (`windows_by_handle`).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_file_id(path: &Path) -> Option<u128> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+
+    const FILE_READ_ATTRIBUTES: u32 = 0x80;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .ok()?;
+
+    #[allow(dead_code)]
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_low: u32,
+        creation_high: u32,
+        access_low: u32,
+        access_high: u32,
+        write_low: u32,
+        write_high: u32,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    let mut info = ByHandleFileInformation {
+        file_attributes: 0,
+        creation_low: 0,
+        creation_high: 0,
+        access_low: 0,
+        access_high: 0,
+        write_low: 0,
+        write_high: 0,
+        volume_serial_number: 0,
+        file_size_high: 0,
+        file_size_low: 0,
+        number_of_links: 0,
+        file_index_high: 0,
+        file_index_low: 0,
+    };
+    // SAFETY: `file` owns the handle for this call, and `info` is a valid
+    // out-buffer of the documented struct.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        return None;
+    }
+    let index = ((info.file_index_high as u64) << 32) | u64::from(info.file_index_low);
+    Some((u128::from(info.volume_serial_number) << 64) | u128::from(index))
+}
+
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn windows_paths_equal(left: &Path, right: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+
+    let left: Vec<u16> = left.as_os_str().encode_wide().collect();
+    let right: Vec<u16> = right.as_os_str().encode_wide().collect();
+    let (Ok(left_len), Ok(right_len)) = (i32::try_from(left.len()), i32::try_from(right.len()))
+    else {
+        return false;
+    };
+    const CSTR_EQUAL: i32 = 2;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CompareStringOrdinal(
+            left: *const u16,
+            left_len: i32,
+            right: *const u16,
+            right_len: i32,
+            ignore_case: i32,
+        ) -> i32;
+    }
+    // SAFETY: both buffers live for the call and the lengths match them.
+    let order =
+        unsafe { CompareStringOrdinal(left.as_ptr(), left_len, right.as_ptr(), right_len, 1) };
+    order == CSTR_EQUAL
 }
 
 fn terminate(output: &mut Vec<u8>) {
@@ -495,6 +609,13 @@ mod tests {
             let hard = dir.join("hard.tgw");
             fs::hard_link(&input, &hard).unwrap();
             assert!(same_file(&input, &hard));
+        }
+        #[cfg(windows)]
+        {
+            let hard = dir.join("hard.tgw");
+            fs::hard_link(&input, &hard).unwrap();
+            assert!(same_file(&input, &hard));
+            assert!(same_file(&input, &dir.join("A.TGW")));
         }
         let _ = fs::remove_dir_all(&dir);
     }
