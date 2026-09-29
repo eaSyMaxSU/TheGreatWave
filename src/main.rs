@@ -4,7 +4,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tgw::InputFormat;
 
@@ -206,6 +206,25 @@ fn run() -> Result<(), String> {
     if options.watch || options.view {
         return live(options);
     }
+    if options.action == Action::Render {
+        if let (Some(input), Some(output)) = (
+            options
+                .input
+                .as_ref()
+                .filter(|path| path.as_os_str() != "-"),
+            options
+                .output
+                .as_ref()
+                .filter(|path| path.as_os_str() != "-"),
+        ) {
+            if same_file(input, output) {
+                return Err(format!(
+                    "{}: the output would overwrite the diagram",
+                    output.display()
+                ));
+            }
+        }
+    }
     let label = options
         .input
         .as_ref()
@@ -263,6 +282,44 @@ fn render_file(source: &str, format: InputFormat, indent: u8) -> Result<Vec<u8>,
     tgw::render_with_format(source, &mut output, indent, format)?;
     terminate(&mut output);
     Ok(output)
+}
+
+/// True when writing `output` would truncate the diagram, including through a
+/// different path, a symlink, or a hard link.
+fn same_file(input: &Path, output: &Path) -> bool {
+    if let (Ok(left), Ok(right)) = (fs::metadata(input), fs::metadata(output)) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if left.dev() == right.dev() && left.ino() == right.ino() {
+                return true;
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if left.file_index().is_some()
+                && left.file_index() == right.file_index()
+                && left.volume_serial_number() == right.volume_serial_number()
+            {
+                return true;
+            }
+        }
+    }
+    fn resolve(path: &Path) -> Option<PathBuf> {
+        if let Ok(path) = path.canonicalize() {
+            return Some(path);
+        }
+        let parent = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => Path::new("."),
+        };
+        Some(parent.canonicalize().ok()?.join(path.file_name()?))
+    }
+    match (resolve(input), resolve(output)) {
+        (Some(input), Some(output)) => input == output,
+        _ => input == output,
+    }
 }
 
 fn terminate(output: &mut Vec<u8>) {
@@ -419,6 +476,27 @@ mod tests {
             assert!(text.contains(flag), "{flag}");
         }
         assert!(parse(&["--help", "--watch"]).unwrap().action == Action::Help);
+    }
+
+    #[test]
+    fn render_refuses_to_overwrite_the_diagram() {
+        let dir = std::env::temp_dir().join(format!("tgw-self-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("a.tgw");
+        fs::write(&input, "clk: p\n").unwrap();
+        assert!(same_file(&input, &dir.join(".").join("a.tgw")));
+        assert!(!same_file(&input, &dir.join("a.svg")));
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.tgw");
+            std::os::unix::fs::symlink(&input, &link).unwrap();
+            assert!(same_file(&link, &input));
+            let hard = dir.join("hard.tgw");
+            fs::hard_link(&input, &hard).unwrap();
+            assert!(same_file(&input, &hard));
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

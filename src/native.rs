@@ -148,20 +148,27 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
         let colon = find_outside(line, ":")
             .ok_or_else(|| error("expected name: waveform (or an @directive)"))?;
         let name = text(line[..colon].trim(), at)?;
-        let mut parts = split_outside(&line[colon + 1..], ';');
+        let after_colon = colon + 1;
+        let after = &line[after_colon..];
+        let body_pad = after.len() - after.trim_start().len();
+        let body = after.trim();
+        let mut parts = split_outside(body, ';');
         let body = parts.next().unwrap_or("").trim();
-        let (wave, data) = if let Some(pos) = find_outside(body, "=>") {
+        let (wave_raw, data) = if let Some(pos) = find_outside(body, "=>") {
             (&body[..pos], Some(&body[pos + 2..]))
         } else {
             (body, None)
         };
-        let wave = wave.trim();
+        let wave_pad = wave_raw.len() - wave_raw.trim_start().len();
+        let wave = wave_raw.trim();
+        let wave_at = at + after_colon + body_pad + wave_pad;
         let body = if let Some(path) = wave.strip_prefix("path ") {
-            Body::Path(text(path.trim(), at)?)
+            Body::Path(text(path.trim(), wave_at)?)
         } else if wave.is_empty() {
             Body::None
         } else {
-            let mut compact = text(wave, at)?;
+            let quoted = wave.starts_with(['\'', '"']);
+            let mut compact = text(wave, wave_at)?;
             let mut spaced = false;
             for (i, byte) in compact.bytes().enumerate() {
                 if byte == b'.' {
@@ -177,7 +184,10 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
                         ..=b'9' | b'x' | b'd' | b'u' | b'z' | b'=' | b'|' | b'<' | b'>'
                 ) {
                     let c = compact[i..].chars().next().unwrap();
-                    return Err(error(&format!("unknown wave symbol {c:?}")));
+                    // A quoted wave is unescaped before this scan, so the
+                    // source column of an escape is the opening quote.
+                    let offset = if quoted { wave_at } else { wave_at + i };
+                    return Err(err(offset, &format!("unknown wave symbol {c:?}")));
                 }
             }
             if spaced {
@@ -553,6 +563,12 @@ mod tests {
         ] {
             assert!(parse(input).is_err(), "{input}");
         }
+        let source = "clk: p?\n";
+        let error = parse(source).unwrap_err();
+        assert_eq!(error.offset, source.find('?').unwrap(), "{}", error.message);
+        let source = "clk: p...\ndata: x.?.\n";
+        let error = parse(source).unwrap_err();
+        assert_eq!(error.offset, source.find('?').unwrap(), "{}", error.message);
         assert!(parse(&format!(
             "{}clk:p\n{}",
             "@group nested\n".repeat(65),

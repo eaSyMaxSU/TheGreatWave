@@ -2,7 +2,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -51,6 +51,13 @@ impl Job {
                     "{}: expected a file, not a directory",
                     output.display()
                 ));
+            }
+            let parent = match output.parent() {
+                Some(parent) if !parent.as_os_str().is_empty() => parent,
+                _ => Path::new("."),
+            };
+            if !parent.is_dir() {
+                return Err(format!("{}: directory is missing", parent.display()));
             }
             if same_file(&input, output) {
                 return Err(format!(
@@ -216,11 +223,16 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// A closed stderr pipe must not panic the process that is still rewriting the file.
+fn say(message: impl std::fmt::Display) {
+    let _ = writeln!(io::stderr().lock(), "{message}");
+}
+
 /// Rewrites the output after every save and reports each change on stderr.
 /// Runs until the process is stopped.
 pub(crate) fn follow(job: Job) -> Result<(), String> {
     let output = job.output.as_ref().ok_or("--watch needs -o PATH")?;
-    eprintln!("tgw: watching {} (Ctrl-C to stop)", job.label);
+    say(format!("tgw: watching {} (Ctrl-C to stop)", job.label));
     let mut gate = watch(&job.input).ok();
     let mut observed = None;
     let mut reported: Option<String> = None;
@@ -229,6 +241,11 @@ pub(crate) fn follow(job: Job) -> Result<(), String> {
     let mut retry = false;
     loop {
         if pending {
+            // A write that failed (read-only file, missing directory) must not
+            // spin: the save that caused it also wakes the directory watcher.
+            if retry {
+                thread::sleep(SOURCE_POLL);
+            }
             epoch += 1;
             let fresh = job.load(epoch);
             retry = false;
@@ -248,16 +265,16 @@ pub(crate) fn follow(job: Job) -> Result<(), String> {
                 }
                 Loaded::Text { written, .. } => {
                     if written == Some(Ok(true)) {
-                        eprintln!("tgw: wrote {}", output.label);
+                        say(format!("tgw: wrote {}", output.label));
                     } else if epoch == 1 || reported.is_some() {
-                        eprintln!("tgw: {} is up to date", output.label);
+                        say(format!("tgw: {} is up to date", output.label));
                     }
                     None
                 }
             };
             if let Some(problem) = &problem {
                 if reported.as_ref() != Some(problem) {
-                    eprintln!("tgw: {problem}");
+                    say(format!("tgw: {problem}"));
                 }
             }
             reported = problem;
@@ -795,6 +812,13 @@ mod tests {
         assert!(Job::new(dir.clone(), None, InputFormat::Auto, 0).is_err());
         assert!(Job::new(input.clone(), Some(dir.clone()), InputFormat::Auto, 0).is_err());
         assert!(Job::new(dir.join("typo.tgw"), None, InputFormat::Auto, 0).is_err());
+        assert!(Job::new(
+            input.clone(),
+            Some(dir.join("missing").join("a.svg")),
+            InputFormat::Auto,
+            0
+        )
+        .is_err());
         assert!(Job::new(input, Some(dir.join("a.svg")), InputFormat::Auto, 0).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }

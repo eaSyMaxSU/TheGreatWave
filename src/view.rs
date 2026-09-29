@@ -1,6 +1,7 @@
 //! Live window for one `.tgw` or WaveJSON file.
 
 use std::future::{poll_fn, Future};
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::thread;
@@ -29,7 +30,7 @@ pub(crate) fn run(job: Job) -> Result<(), String> {
     display_available()?;
     gpui_kit::application().run(move |cx| {
         if let Err(error) = launch(job, cx) {
-            eprintln!("tgw: {error}");
+            let _ = writeln!(io::stderr().lock(), "tgw: {error}");
             std::process::exit(1);
         }
     });
@@ -167,6 +168,8 @@ struct Viewer {
     seen_viewport: Option<(f32, f32)>,
     hug_request: Option<(f32, f32)>,
     cached_frame: Option<(u64, Frame)>,
+    /// Atlas entries for pictures this window no longer shows.
+    retired: Vec<Arc<RenderImage>>,
 }
 
 impl Viewer {
@@ -194,6 +197,24 @@ impl Viewer {
             seen_viewport: None,
             hug_request: None,
             cached_frame: None,
+            retired: Vec::new(),
+        }
+    }
+
+    fn retire(&mut self, previous: Option<PaneImage>) {
+        if let Some(previous) = previous {
+            self.retired.push(previous.image);
+        }
+    }
+
+    /// GPUI keeps a sprite-atlas entry until `drop_image`. Replaced pictures
+    /// would otherwise accumulate for the life of the window.
+    fn release_images(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.retired.is_empty() {
+            return;
+        }
+        for image in std::mem::take(&mut self.retired) {
+            cx.drop_image(image, Some(window));
         }
     }
 
@@ -410,12 +431,15 @@ impl Viewer {
                             .as_ref()
                             .is_some_and(|layout| layout.label.w < 1.0);
                         if hide_labels {
-                            view.labels = None;
+                            let previous = view.labels.take();
+                            view.retire(previous);
                         } else if let Some(labels) = painted.0 {
-                            view.labels = Some(labels);
+                            let previous = view.labels.replace(labels);
+                            view.retire(previous);
                         }
                         if let Some(waves) = painted.1 {
-                            view.waves = Some(waves);
+                            let previous = view.waves.replace(waves);
+                            view.retire(previous);
                         }
                         view.raster_waiting = false;
                         cx.notify();
@@ -613,6 +637,7 @@ impl Viewer {
 
 impl Render for Viewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.release_images(window, cx);
         self.note_viewport(window);
         self.layout = self.sync_layout(window);
         if let Some(layout) = self.layout {
@@ -1763,7 +1788,7 @@ mod tests {
         assert_eq!(state.apply_text("a.tgw", bad), Step::StatusOnly);
         assert_eq!(state.svg, svg);
         assert_eq!(state.generation, generation);
-        assert_eq!(state.status(), Some("a.tgw:1:1: unknown wave symbol '?'"));
+        assert_eq!(state.status(), Some("a.tgw:1:7: unknown wave symbol '?'"));
         assert_eq!(state.apply_text("a.tgw", bad), Step::Unchanged);
         assert_eq!(state.generation, generation);
         assert_eq!(state.svg, svg);
@@ -1797,7 +1822,7 @@ mod tests {
         let generation = state.generation;
         state.mark_unavailable("a.tgw: file is missing".into());
         assert_eq!(state.apply_text("a.tgw", "clk: p?\n"), Step::StatusOnly);
-        assert_eq!(state.status(), Some("a.tgw:1:1: unknown wave symbol '?'"));
+        assert_eq!(state.status(), Some("a.tgw:1:7: unknown wave symbol '?'"));
         assert_eq!(state.svg, svg);
         assert_eq!(state.generation, generation);
     }
