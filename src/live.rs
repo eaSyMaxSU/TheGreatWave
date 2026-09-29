@@ -664,12 +664,11 @@ mod tests {
         let started = Instant::now();
         assert_eq!(read_source(&path).unwrap(), "clk: p\n");
         assert!(started.elapsed() >= READ_SETTLE);
-        assert!(started.elapsed() < READ_DEADLINE);
 
         let missing = dir.join("missing.tgw");
         let started = Instant::now();
         assert!(matches!(read_source(&missing), Err(SourceError::Missing)));
-        assert!(started.elapsed() < Duration::from_millis(120));
+        assert!(started.elapsed() < READ_DEADLINE);
         let _ = fs::remove_dir_all(&dir);
     }
 

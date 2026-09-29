@@ -372,18 +372,17 @@ fn scope_ids(out: &mut Vec<u8>) {
         0x517cc1b727220a95,
         0x6eed0e9da4d94a4f,
     ];
-    let mut chunks = out.chunks_exact(32);
-    for chunk in &mut chunks {
-        for (state, word) in lanes.iter_mut().zip(chunk.chunks_exact(8)) {
-            *state =
-                (*state ^ u64::from_le_bytes(word.try_into().unwrap())).wrapping_mul(0x100000001b3);
+    let (blocks, rest) = out.as_chunks::<32>();
+    for block in blocks {
+        for (state, word) in lanes.iter_mut().zip(block.as_chunks::<8>().0) {
+            *state = (*state ^ u64::from_le_bytes(*word)).wrapping_mul(0x100000001b3);
         }
     }
     let mut hash = out.len() as u64;
     for state in lanes {
         hash = (hash ^ state).wrapping_mul(0x100000001b3);
     }
-    for &byte in chunks.remainder() {
+    for &byte in rest {
         hash = (hash ^ byte as u64).wrapping_mul(0x100000001b3);
     }
     hash ^= hash >> 32;
