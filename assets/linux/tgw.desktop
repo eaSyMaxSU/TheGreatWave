@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=The Great Wave
+GenericName=Timing Diagram Viewer
+Comment=Live view of a .tgw or WaveJSON timing diagram
+Exec=tgw --view %f
+Icon=tgw
+Terminal=false
+NoDisplay=true
+Categories=Development;Electronics;
+StartupWMClass=tgw

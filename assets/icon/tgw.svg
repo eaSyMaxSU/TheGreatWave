@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>The Great Wave</title>
+  <defs>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f64a6"/>
+      <stop offset="1" stop-color="#0b2140"/>
+    </linearGradient>
+    <linearGradient id="foam" x1="184" y1="744" x2="820" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0.35" stop-color="#f6f0e4"/>
+      <stop offset="1" stop-color="#a8d8f2"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="228" fill="url(#sea)"/>
+  <path d="M176 752H256V616H368V752H440C548 752 528 300 684 292C810 286 868 420 800 500C750 556 662 530 672 460C678 420 720 404 746 430"
+        fill="none" stroke="url(#foam)" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

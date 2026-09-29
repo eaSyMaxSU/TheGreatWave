@@ -1,6 +1,8 @@
 # The Great Wave
 
-`tgw` turns readable timing diagrams into compact, self-contained SVGs. Write aligned signals in a `.tgw` file; there are no braces, commas, or repeated `name`/`wave` keys. The Rust library and CLI have no dependencies.
+<img src="assets/icon/tgw.svg" width="88" height="88" align="right" alt="The Great Wave icon">
+
+`tgw` turns readable timing diagrams into compact, self-contained SVGs. Write aligned signals in a `.tgw` file; there are no braces, commas, or repeated `name`/`wave` keys. One binary renders, keeps the SVG current while you edit, and shows the diagram in a live window. The renderer and the Rust library have no dependencies.
 
 ```text
 @title Bus transfer
@@ -23,7 +25,7 @@ cargo build --release
 ./target/release/tgw < examples/transfer.tgw > transfer.svg
 ```
 
-`-i/--input` also selects an input file; `-o/--output` writes a file. Omit the input, or use `-`, to read stdin. `--indent 2` formats the SVG. `--help` lists all options. Errors include the source line and column.
+`-i/--input` also selects an input file; `-o/--output` writes a file. Omit the input, or use `-`, to read stdin. `--indent 2` formats the SVG. `tgw --help` documents every option, live mode, and the window controls. Errors include the source line and column.
 
 Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automatically, or selected with `--format tgw|json5|auto`. Convert old diagrams once:
 
@@ -35,28 +37,57 @@ Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automat
 
 ## Live view
 
-`tgw-view` opens one diagram in a window and redraws it whenever that file is saved. The default `tgw` build stays dependency-free; the viewer is an optional feature and needs Rust 1.85 or newer.
-
-Build it, then open a `.tgw` or WaveJSON file:
+`--view` opens the diagram in a window; `--watch` runs without one. Either way `tgw` keeps running, and every save of the input brings the output file, and the window, up to date:
 
 ```sh
-cargo build --release --features view --bin tgw-view
-./target/release/tgw-view examples/transfer.tgw
+./target/release/tgw examples/transfer.tgw -o transfer.svg --view   # window and file
+./target/release/tgw examples/transfer.tgw --view                   # window only
+./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only, e.g. over SSH
 ```
 
-The same command works while editing. Save the file and the window updates. `tgw-view --help` prints usage. Pass one path only; stdin is not accepted.
+Live mode needs an input file rather than stdin, and `--watch` also needs `-o`. The output holds exactly the bytes a one-off `tgw INPUT -o OUTPUT` writes with the same `--indent` and `--format`. It is replaced in one step, so a reader never sees half a file, and it is left alone when a save changes nothing. Editors that save through a temporary file and rename it are followed. The input is also checked five times a second, so a save is not missed where file events are unreliable, such as on network drives.
 
-```sh
-cargo run --release --features view --bin tgw-view -- examples/transfer.tgw
-```
+A syntax error or a missing file keeps the last good picture and output, and reports `path:line:col: message` until the next good save: in the window's status bar, or on stderr for `--watch`. Ctrl-W or Ctrl-Q closes the window (Command-W or Command-Q on macOS); `--watch` stops with Ctrl-C.
 
 Signal names stay fixed on the left. Tick numbers, the title, and the waveforms scroll together. Drag a scrollbar, click its track, or use the trackpad; hold Shift to move a vertical scroll sideways. A diagram wider than the window scrolls horizontally, and a taller one scrolls vertically. A tick label that would be cut by the edge is omitted until it fits. The picture keeps a small, equal padding on every edge. A short diagram opens in a window snug to the drawing. Resizing the window keeps that size and uses the extra room as padding. The horizontal scrollbar appears when the waveform is wider than the window; a taller diagram scrolls vertically. A diagram that fits, including a short clock, is enlarged and stays fully visible. `@bounds` still limits the time range that is drawn.
 
-A syntax error or a missing file keeps the last successful picture and shows `path:line:col: message` until the next good save. Command-W and Command-Q close the window.
+## Builds
+
+| Command | Includes |
+| --- | --- |
+| `cargo build --release` | Renderer, `--watch`, and `--view` (default) |
+| `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, without GUI libraries |
+| `cargo build --release --no-default-features` | Renderer only, with no dependencies |
+
+`tgw --help` says which modes a build leaves out. The window uses [GPUI](https://www.gpui.rs/), which tracks recent stable Rust; CI builds with the latest stable release. Programs that only render can depend on the library with `default-features = false`.
+
+## Platforms
+
+CI builds and tests macOS, Windows, and Linux on every push.
+
+- **macOS**: the Dock shows the tgw icon while a window is open.
+- **Windows**: the icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the resource compiler from the Visual Studio Build Tools, or `windres` for the GNU toolchain; without one the build prints a warning and continues without the icon. Files saved with CRLF line endings render exactly like LF.
+- **Linux**: the window runs on Wayland or X11. Without `WAYLAND_DISPLAY` or `DISPLAY`, `--view` exits with a message, and `--watch` still works. Building the window needs the xkbcommon, xcb, Wayland, and fontconfig development packages; on Debian or Ubuntu:
 
 ```sh
-cargo test --features view
-cargo clippy --all-targets --features view -- -D warnings
+sudo apt install pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+  libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
+```
+
+X11 takes the window icon from `tgw` itself. Wayland docks and file managers find it through the desktop entry:
+
+```sh
+cargo install --path .
+install -Dm644 assets/linux/tgw.desktop ~/.local/share/applications/tgw.desktop
+install -Dm644 assets/icon/tgw.svg ~/.local/share/icons/hicolor/scalable/apps/tgw.svg
+```
+
+## Icon
+
+A square pulse, the first edge of every timing diagram, swells into Hokusai's breaking wave. `assets/icon/tgw.svg` is the master. The Dock PNG and the multi-size Windows ICO are generated from it:
+
+```sh
+cargo run --example icon
 ```
 
 ## Native format
@@ -144,12 +175,14 @@ let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 
 ```sh
 cargo test
+cargo test --no-default-features
+cargo test --no-default-features --features watch
 cargo test --release
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals. SVG snapshots only change on explicit request:
+The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`, and must render identically with CRLF line endings. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals. `tests/watch.rs` runs the real binary with `--watch`, saves good and broken diagrams, and checks the output against one-off renders. SVG snapshots only change on explicit request:
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test --test render snapshots

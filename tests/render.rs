@@ -90,6 +90,33 @@ fn snapshots() {
 }
 
 #[test]
+fn windows_line_endings_render_the_same_picture() {
+    let fixtures = root().join("tests/fixtures");
+    let mut sources: Vec<PathBuf> = [fixtures.clone(), fixtures.join("legacy")]
+        .iter()
+        .flat_map(|dir| fs::read_dir(dir).unwrap())
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext != "svg"))
+        .collect();
+    sources.sort();
+    assert!(sources.len() > 8, "{sources:?}");
+    for path in sources {
+        let source = fs::read_to_string(&path).unwrap();
+        assert!(
+            !source.contains('\r'),
+            "{} is checked out with CRLF",
+            path.display()
+        );
+        let windows = source.replace('\n', "\r\n");
+        match (tgw::render(&source), tgw::render(&windows)) {
+            (Ok(unix), Ok(crlf)) => assert_eq!(unix, crlf, "{}", path.display()),
+            (Err(_), Err(_)) => {}
+            (unix, crlf) => panic!("{}: {unix:?} vs {crlf:?}", path.display()),
+        }
+    }
+}
+
+#[test]
 fn long_clock_is_constant_paint() {
     let short = "{signal:[{name:'clk',wave:'p...'}]}";
     let mut dots = String::from("p");

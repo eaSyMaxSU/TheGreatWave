@@ -1,18 +1,9 @@
 //! Live window for one `.tgw` or WaveJSON file.
 
-#![forbid(unsafe_code)]
-
-use std::ffi::OsString;
-use std::fs;
 use std::future::{poll_fn, Future};
-use std::io::{self, ErrorKind};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
-use std::task::{Context as TaskContext, Poll, Waker};
+use std::task::{Poll, Waker};
 use std::thread;
-use std::time::Duration;
 
 use gpui_kit::{
     div, img, px, rgb, size, App, AppContext, Bounds, Context, DevicePixels, FocusHandle,
@@ -21,79 +12,65 @@ use gpui_kit::{
     Styled, SvgSize, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-gpui_kit::actions!(tgw_view, [Quit]);
-use notify::event::EventKind;
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use crate::live::{self, lock, Fresh, Gate, Job, Loaded, SourceStamp, SOURCE_POLL};
 
-const DEBOUNCE: Duration = Duration::from_millis(80);
-const READ_PAUSE: Duration = Duration::from_millis(15);
-const READ_SETTLE: Duration = Duration::from_millis(100);
-const READ_DEADLINE: Duration = Duration::from_millis(400);
-const SOURCE_POLL: Duration = Duration::from_millis(200);
+gpui_kit::actions!(tgw_view, [Quit]);
+
 const MAX_DEVICE_PX: f32 = 8192.0;
 const STATUS_HEIGHT: f32 = 32.0;
 const SCROLLBAR: f32 = 12.0;
 /// Logical pixels of white kept around the drawing on every side.
 const EDGE: f32 = 8.0;
+/// Wayland and X11 match windows to `tgw.desktop` by this id.
+const APP_ID: &str = "tgw";
 
-const USAGE: &str = "\
-tgw-view — live timing diagrams
-
-Usage: tgw-view FILE
-
-  FILE    Diagram to watch (.tgw or WaveJSON)
-
-Re-renders when FILE is saved. A syntax error keeps the last successful picture.
-";
-
-fn main() {
-    match arguments(std::env::args_os().skip(1)) {
-        Ok(None) => println!("{USAGE}"),
-        Ok(Some(path)) => gpui_kit::application().run(move |cx| {
-            if let Err(error) = launch(path, cx) {
-                eprintln!("tgw-view: {error}");
-                std::process::exit(1);
-            }
-        }),
-        Err(error) => {
-            eprintln!("tgw-view: {error}");
+/// Opens the window and returns when it closes.
+pub(crate) fn run(job: Job) -> Result<(), String> {
+    display_available()?;
+    gpui_kit::application().run(move |cx| {
+        if let Err(error) = launch(job, cx) {
+            eprintln!("tgw: {error}");
             std::process::exit(1);
         }
-    }
+    });
+    Ok(())
 }
 
-fn arguments(args: impl IntoIterator<Item = OsString>) -> Result<Option<PathBuf>, String> {
-    let mut args = args.into_iter();
-    let Some(path) = args.next() else {
-        return Err("provide a diagram file; use --help for usage".into());
-    };
-    if path == "-h" || path == "--help" {
-        return Ok(None);
+/// Without a display server GPUI falls back to a headless platform whose
+/// window is never shown.
+fn display_available() -> Result<(), String> {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+        if !set("WAYLAND_DISPLAY") && !set("DISPLAY") {
+            return Err(
+                "--view needs a display, but neither WAYLAND_DISPLAY nor DISPLAY is set; \
+                        use --watch -o PATH to keep the output current without a window"
+                    .into(),
+            );
+        }
     }
-    if args.next().is_some() {
-        return Err("provide only one diagram file".into());
-    }
-    if path == "-" {
-        return Err("tgw-view needs a file path".into());
-    }
-    Ok(Some(PathBuf::from(path)))
+    Ok(())
 }
 
-fn launch(path: PathBuf, cx: &mut App) -> Result<(), String> {
-    if path.is_dir() {
-        return Err(format!("{}: expected a diagram file", path.display()));
-    }
+fn launch(job: Job, cx: &mut App) -> Result<(), String> {
     gpui_kit::init(cx);
     cx.set_quit_mode(QuitMode::LastWindowClosed);
     cx.bind_keys([
-        KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-w", Quit, None),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-w", Quit, None),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
-    let title = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "tgw".into());
+    #[cfg(target_os = "macos")]
+    dock_icon();
+    let name = |path: &std::path::Path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+    };
+    let mut title = name(&job.input).unwrap_or_else(|| "tgw".into());
+    if let Some(output) = &job.output {
+        title = format!("{title} → {}", output.label);
+    }
     let options = WindowOptions {
         titlebar: Some(TitlebarOptions {
             title: Some(title.into()),
@@ -105,11 +82,15 @@ fn launch(path: PathBuf, cx: &mut App) -> Result<(), String> {
             cx,
         ))),
         window_min_size: Some(size(px(320.0), px(200.0))),
+        app_id: Some(APP_ID.into()),
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        icon: window_icon(cx),
         ..WindowOptions::default()
     };
+    let job = Arc::new(job);
     gpui_kit::open_window(options, cx, move |window, cx| {
         let viewer = cx.new(|cx| {
-            let mut viewer = Viewer::new(path, cx.focus_handle());
+            let mut viewer = Viewer::new(job, cx.focus_handle());
             viewer.start(cx);
             viewer
         });
@@ -121,10 +102,51 @@ fn launch(path: PathBuf, cx: &mut App) -> Result<(), String> {
     Ok(())
 }
 
+/// A binary started from a terminal has no bundle icon, so the Dock would
+/// show a generic executable.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn dock_icon() {
+    use objc2::{AnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(main_thread) = MainThreadMarker::new() else {
+        return;
+    };
+    let data = NSData::with_bytes(include_bytes!("../assets/icon/tgw.png"));
+    let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    // SAFETY: on the main thread, with an image rather than nil.
+    unsafe { NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image)) };
+}
+
+/// X11 draws this in title bars and task switchers. Wayland takes the icon
+/// from the desktop entry named by `APP_ID` instead.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn window_icon(cx: &App) -> Option<Arc<image::RgbaImage>> {
+    const SIDE: u32 = 128;
+    let renderer = cx.svg_renderer();
+    let tree = renderer
+        .parse_svg(include_bytes!("../assets/icon/tgw.svg"))
+        .ok()?;
+    let side = DevicePixels(SIDE as i32);
+    let image = renderer
+        .render_parsed(&tree, SvgSize::ExactSize(size(side, side)))
+        .ok()?;
+    let mut pixels = image.as_bytes(0)?.to_vec();
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    image::RgbaImage::from_raw(SIDE, SIDE, pixels).map(Arc::new)
+}
+
 struct Viewer {
-    path: PathBuf,
-    label: String,
+    job: Arc<Job>,
     state: DiagramState,
+    /// The output file could not be written; retried on every poll.
+    output_fault: Option<String>,
     epoch: u64,
     loading: bool,
     watching: bool,
@@ -148,12 +170,11 @@ struct Viewer {
 }
 
 impl Viewer {
-    fn new(path: PathBuf, focus_handle: FocusHandle) -> Self {
-        let label = path.display().to_string();
+    fn new(job: Arc<Job>, focus_handle: FocusHandle) -> Self {
         Self {
-            path,
-            label,
+            job,
             state: DiagramState::default(),
+            output_fault: None,
             epoch: 0,
             loading: false,
             watching: false,
@@ -186,7 +207,7 @@ impl Viewer {
         if self.watching {
             return true;
         }
-        let Ok(gate) = watch(&self.path) else {
+        let Ok(gate) = live::watch(&self.job.input) else {
             return false;
         };
         self.watching = true;
@@ -195,18 +216,19 @@ impl Viewer {
     }
 
     fn observe_source(&mut self, cx: &mut Context<Self>) {
-        let path = self.path.clone();
+        let job = Arc::clone(&self.job);
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
             loop {
                 executor.timer(SOURCE_POLL).await;
-                let stamp = source_stamp(&path);
+                let stamp = live::source_stamp(&job.input);
                 let gone = this
                     .update(cx, |view, cx| {
                         if !view.watching {
                             let _ = view.attach_watch(cx);
                         }
-                        if view.observed != stamp && !view.loading {
+                        let stale = view.observed != stamp || view.output_fault.is_some();
+                        if stale && !view.loading {
                             view.request_reload(cx);
                         }
                         false
@@ -222,7 +244,7 @@ impl Viewer {
 
     fn follow(&mut self, gate: Arc<Gate>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
-            if !gate.next().await {
+            if !poll_fn(|task| gate.poll_wait(task)).await {
                 break;
             }
             if this.update(cx, |view, cx| view.request_reload(cx)).is_err() {
@@ -236,12 +258,11 @@ impl Viewer {
         self.loading = true;
         self.epoch = self.epoch.wrapping_add(1);
         let epoch = self.epoch;
-        let path = self.path.clone();
-        let label = self.label.clone();
+        let job = Arc::clone(&self.job);
         cx.spawn(async move |this, cx| {
             // Reading waits for the writer to finish, so it stays off the
             // shared worker pool that also rasterizes the picture.
-            let fresh = io_task(move || load_fresh(&path, &label)).await;
+            let fresh = io_task(move || job.load(epoch)).await;
             this.update(cx, |view, cx| view.finish_load(epoch, fresh, cx))
                 .ok();
         })
@@ -253,12 +274,18 @@ impl Viewer {
             return;
         }
         self.loading = false;
+        self.output_fault = None;
         match fresh.loaded {
             Loaded::Unreadable(message) => {
                 self.state.mark_unavailable(message);
             }
-            Loaded::Text { source, rendered } => {
-                self.state.commit(&self.label, &source, rendered);
+            Loaded::Text {
+                source,
+                svg,
+                written,
+            } => {
+                self.state.commit(&self.job.label, &source, svg);
+                self.output_fault = written.and_then(Result::err);
             }
         };
         if fresh.stable {
@@ -267,6 +294,10 @@ impl Viewer {
             self.request_reload(cx);
         }
         cx.notify();
+    }
+
+    fn status(&self) -> Option<&str> {
+        self.state.status().or(self.output_fault.as_deref())
     }
 
     fn note_viewport(&mut self, window: &Window) {
@@ -291,11 +322,8 @@ impl Viewer {
             return;
         }
         let viewport = window.viewport_size();
-        let Some(height) = hugged_height(
-            layout,
-            viewport.height.as_f32(),
-            self.state.status().is_some(),
-        ) else {
+        let Some(height) = hugged_height(layout, viewport.height.as_f32(), self.status().is_some())
+        else {
             return;
         };
         let width = viewport.width.as_f32();
@@ -307,7 +335,7 @@ impl Viewer {
         self.pixels_per_point = window.scale_factor();
         let viewport = window.viewport_size();
         let mut height = viewport.height.as_f32();
-        if self.state.status().is_some() {
+        if self.status().is_some() {
             height -= STATUS_HEIGHT;
         }
         let frame = self.frame()?;
@@ -636,10 +664,9 @@ impl Render for Viewer {
                         .child(scrollbar(layout.h_thumb, layout.wave_w, SCROLLBAR, true)),
                 );
             }
-        } else {
-            column = column.child(div().flex_1());
         }
-        if let Some(status) = self.state.status() {
+        column = column.child(div().flex_1());
+        if let Some(status) = self.status() {
             column = column.child(
                 div()
                     .w_full()
@@ -656,168 +683,6 @@ impl Render for Viewer {
             );
         }
         column
-    }
-}
-
-fn watch(path: &Path) -> Result<Arc<Gate>, String> {
-    let parents = watch_dirs(path)?;
-    let names = watch_names(path)?;
-    let parents_for_events = parents.clone();
-    let (raw_tx, raw_rx) = mpsc::channel();
-    let gate = Gate::new();
-    let thread_gate = Arc::clone(&gate);
-    let mut watcher = notify::recommended_watcher(move |result: Result<Event, notify::Error>| {
-        let relevant = match result {
-            Ok(event) => event_targets(&event, &parents_for_events, &names),
-            Err(_) => true,
-        };
-        if relevant {
-            let _ = raw_tx.send(());
-        }
-    })
-    .map_err(|error| error.to_string())?;
-    for parent in &parents {
-        watcher
-            .watch(parent, RecursiveMode::NonRecursive)
-            .map_err(|error| format!("{}: {error}", parent.display()))?;
-    }
-    thread::Builder::new()
-        .name("tgw-view-watch".into())
-        .spawn(move || {
-            let _watcher: RecommendedWatcher = watcher;
-            debounce(raw_rx, thread_gate);
-        })
-        .map_err(|error| error.to_string())?;
-    Ok(gate)
-}
-
-fn watch_dirs(path: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut dirs = vec![existing_dir(path)?];
-    if let Some(parent) = path.canonicalize().ok().and_then(|canonical| {
-        canonical
-            .parent()
-            .map(Path::to_path_buf)
-            .filter(|parent| parent.is_dir())
-    }) {
-        let parent = parent.canonicalize().unwrap_or(parent);
-        if !dirs.iter().any(|dir| dir == &parent) {
-            dirs.push(parent);
-        }
-    }
-    Ok(dirs)
-}
-
-fn existing_dir(path: &Path) -> Result<PathBuf, String> {
-    let parent = match path.parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
-    if !parent.is_dir() {
-        return Err(format!("{}: directory is missing", parent.display()));
-    }
-    parent
-        .canonicalize()
-        .map_err(|error| format!("{}: {error}", parent.display()))
-}
-
-fn watch_names(path: &Path) -> Result<Vec<OsString>, String> {
-    let mut names = vec![path
-        .file_name()
-        .ok_or_else(|| format!("{}: expected a file name", path.display()))?
-        .to_os_string()];
-    if let Some(name) = path.canonicalize().ok().and_then(|canonical| {
-        canonical
-            .file_name()
-            .map(|name| name.to_os_string())
-            .filter(|name| !names.iter().any(|existing| existing == name))
-    }) {
-        names.push(name);
-    }
-    Ok(names)
-}
-
-fn event_targets(event: &Event, parents: &[PathBuf], names: &[OsString]) -> bool {
-    if matches!(event.kind, EventKind::Access(_)) {
-        return false;
-    }
-    event.paths.is_empty()
-        || event.paths.iter().any(|path| {
-            names
-                .iter()
-                .any(|name| path.file_name() == Some(name.as_os_str()))
-                || parents.iter().any(|parent| parent == path)
-        })
-}
-
-fn debounce(incoming: Receiver<()>, gate: Arc<Gate>) {
-    while incoming.recv().is_ok() {
-        let mut deadline = std::time::Instant::now() + DEBOUNCE;
-        while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
-            match incoming.recv_timeout(remaining) {
-                Ok(()) => deadline = std::time::Instant::now() + DEBOUNCE,
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    gate.close();
-                    return;
-                }
-            }
-        }
-        gate.signal();
-    }
-    gate.close();
-}
-
-/// A parked watch thread wakes the UI without occupying a worker-pool thread.
-struct Gate {
-    ready: AtomicBool,
-    closed: AtomicBool,
-    waker: Mutex<Option<Waker>>,
-}
-
-impl Gate {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            ready: AtomicBool::new(false),
-            closed: AtomicBool::new(false),
-            waker: Mutex::new(None),
-        })
-    }
-
-    fn signal(&self) {
-        self.ready.store(true, Ordering::Release);
-        self.wake();
-    }
-
-    fn close(&self) {
-        self.closed.store(true, Ordering::Release);
-        self.wake();
-    }
-
-    fn wake(&self) {
-        if let Some(waker) = lock(&self.waker).take() {
-            waker.wake();
-        }
-    }
-
-    fn next(&self) -> impl Future<Output = bool> + '_ {
-        poll_fn(move |cx| self.poll_wait(cx))
-    }
-
-    fn poll_wait(&self, cx: &mut TaskContext<'_>) -> Poll<bool> {
-        if self.ready.swap(false, Ordering::AcqRel) {
-            return Poll::Ready(true);
-        }
-        if self.closed.load(Ordering::Acquire) {
-            return Poll::Ready(false);
-        }
-        *lock(&self.waker) = Some(cx.waker().clone());
-        if self.ready.swap(false, Ordering::AcqRel) {
-            return Poll::Ready(true);
-        }
-        if self.closed.load(Ordering::Acquire) {
-            return Poll::Ready(false);
-        }
-        Poll::Pending
     }
 }
 
@@ -849,174 +714,9 @@ fn io_task<T: Send + 'static>(
     })
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|error| error.into_inner())
-}
-
 struct IoSlot<T> {
     value: Mutex<Option<T>>,
     waker: Mutex<Option<Waker>>,
-}
-
-struct Fresh {
-    loaded: Loaded,
-    stamp: Option<SourceStamp>,
-    stable: bool,
-}
-
-fn load_fresh(path: &Path, label: &str) -> Fresh {
-    let before = source_stamp(path);
-    let loaded = load_diagram(path, label);
-    let stamp = source_stamp(path);
-    Fresh {
-        loaded,
-        stamp,
-        stable: before == stamp,
-    }
-}
-
-enum Loaded {
-    Text {
-        source: String,
-        rendered: Result<String, tgw::Error>,
-    },
-    Unreadable(String),
-}
-
-fn load_diagram(path: &Path, label: &str) -> Loaded {
-    match read_source(path) {
-        Ok(source) => Loaded::Text {
-            rendered: tgw::render(&source),
-            source,
-        },
-        Err(error) => Loaded::Unreadable(unreadable(label, error)),
-    }
-}
-
-#[derive(Debug)]
-enum SourceError {
-    Missing,
-    Utf8,
-    Io(io::Error),
-}
-
-fn unreadable(label: &str, error: SourceError) -> String {
-    match error {
-        SourceError::Missing => format!("{label}: file is missing"),
-        SourceError::Utf8 => format!("{label}: file is not utf-8"),
-        SourceError::Io(error) => format!("{label}: {error}"),
-    }
-}
-
-fn read_source(path: &Path) -> Result<String, SourceError> {
-    if let Some(settled) = read_settled(path) {
-        return settled;
-    }
-    let deadline = std::time::Instant::now() + READ_DEADLINE;
-    let mut last_text = None;
-    let mut stable_since = None;
-    let mut missing_reads = 0u8;
-    let mut last_error = SourceError::Missing;
-    loop {
-        match fs::read(path) {
-            Ok(bytes) => {
-                missing_reads = 0;
-                match String::from_utf8(bytes) {
-                    Ok(text) => {
-                        if last_text.as_ref() == Some(&text) {
-                            let since = *stable_since.get_or_insert_with(std::time::Instant::now);
-                            if since.elapsed() >= READ_SETTLE {
-                                return Ok(text);
-                            }
-                        } else {
-                            last_text = Some(text);
-                            stable_since = Some(std::time::Instant::now());
-                        }
-                    }
-                    Err(_) => return Err(SourceError::Utf8),
-                }
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                missing_reads += 1;
-                stable_since = None;
-                last_error = SourceError::Missing;
-                if missing_reads >= 2 && last_text.is_none() {
-                    return Err(SourceError::Missing);
-                }
-            }
-            Err(error) if transient(&error) => {
-                stable_since = None;
-                last_error = SourceError::Io(error);
-            }
-            Err(error) => return Err(SourceError::Io(error)),
-        }
-        if std::time::Instant::now() >= deadline {
-            return last_text.ok_or(last_error);
-        }
-        thread::sleep(READ_PAUSE);
-    }
-}
-
-/// A file left alone since the last save can be read immediately. Two identical
-/// reads reject a torn in-place write; a fresh modification falls through to
-/// the settle loop.
-fn read_settled(path: &Path) -> Option<Result<String, SourceError>> {
-    if !file_is_settled(path) {
-        return None;
-    }
-    let first = fs::read(path).ok()?;
-    if !file_is_settled(path) {
-        return None;
-    }
-    let second = fs::read(path).ok()?;
-    if first != second || !file_is_settled(path) {
-        return None;
-    }
-    Some(String::from_utf8(first).map_err(|_| SourceError::Utf8))
-}
-
-fn file_is_settled(path: &Path) -> bool {
-    fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|age| age >= READ_SETTLE)
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SourceStamp {
-    len: u64,
-    modified: u128,
-    identity: u128,
-}
-
-fn source_stamp(path: &Path) -> Option<SourceStamp> {
-    let meta = fs::metadata(path).ok()?;
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|time| time.as_nanos())
-        .unwrap_or(0);
-    #[cfg(unix)]
-    let identity = {
-        use std::os::unix::fs::MetadataExt;
-        ((meta.dev() as u128) << 64) | (meta.ino() as u128)
-    };
-    #[cfg(not(unix))]
-    let identity = 0;
-    Some(SourceStamp {
-        len: meta.len(),
-        modified,
-        identity,
-    })
-}
-
-fn transient(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::PermissionDenied
-    ) || matches!(error.raw_os_error(), Some(32 | 33))
 }
 
 #[derive(Clone, Copy)]
@@ -2034,8 +1734,6 @@ fn diagnostic(label: &str, source: &str, error: &tgw::Error) -> String {
 mod tests {
     use super::*;
     use gpui_kit::SvgRenderer;
-    use notify::event::{AccessKind, EventAttributes, ModifyKind};
-    use std::sync::Arc;
 
     #[test]
     fn valid_source_replaces_svg_and_identical_bytes_keep_generation() {
@@ -2281,84 +1979,6 @@ mod tests {
         assert!((scrolled.origin_y - EDGE).abs() < 1.0);
         assert!((right - EDGE).abs() < 1.0, "right pad {right}");
         assert!((bottom - EDGE).abs() < 1.0, "bottom pad {bottom}");
-    }
-
-    #[test]
-    fn watcher_accepts_the_diagram_name_and_ignores_reads() {
-        let parent = PathBuf::from("/diagrams");
-        let names = vec![OsString::from("demo.tgw"), OsString::from("target.tgw")];
-        let parents = [parent.clone()];
-        let saved = Event {
-            kind: EventKind::Modify(ModifyKind::Any),
-            paths: vec![parent.join("demo.tgw")],
-            attrs: EventAttributes::default(),
-        };
-        assert!(event_targets(&saved, &parents, &names));
-        let renamed = Event {
-            kind: EventKind::Modify(ModifyKind::Any),
-            paths: vec![parent.join("demo.tgw.tmp"), parent.join("demo.tgw")],
-            attrs: EventAttributes::default(),
-        };
-        assert!(event_targets(&renamed, &parents, &names));
-        let directory = Event {
-            kind: EventKind::Modify(ModifyKind::Any),
-            paths: vec![parent.clone()],
-            attrs: EventAttributes::default(),
-        };
-        assert!(event_targets(&directory, &parents, &names));
-        let target = Event {
-            kind: EventKind::Modify(ModifyKind::Any),
-            paths: vec![parent.join("target.tgw")],
-            attrs: EventAttributes::default(),
-        };
-        assert!(event_targets(&target, &parents, &names));
-        let read = Event {
-            kind: EventKind::Access(AccessKind::Read),
-            paths: vec![parent.join("demo.tgw")],
-            attrs: EventAttributes::default(),
-        };
-        assert!(!event_targets(&read, &parents, &names));
-        let sibling = Event {
-            kind: EventKind::Modify(ModifyKind::Any),
-            paths: vec![parent.join("other.tgw")],
-            attrs: EventAttributes::default(),
-        };
-        assert!(!event_targets(&sibling, &parents, &names));
-    }
-
-    #[test]
-    fn read_source_waits_until_bytes_settle() {
-        let path = std::env::temp_dir().join(format!("tgw-read-settle-{}.tgw", std::process::id()));
-        fs::write(&path, "clk: p\n").unwrap();
-        let started = std::time::Instant::now();
-        assert_eq!(read_source(&path).unwrap(), "clk: p\n");
-        assert!(started.elapsed() >= READ_SETTLE);
-        assert!(started.elapsed() < READ_DEADLINE);
-
-        let missing =
-            std::env::temp_dir().join(format!("tgw-read-missing-{}.tgw", std::process::id()));
-        let _ = fs::remove_file(&missing);
-        let started = std::time::Instant::now();
-        assert!(matches!(read_source(&missing), Err(SourceError::Missing)));
-        assert!(started.elapsed() < Duration::from_millis(120));
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn read_source_returns_a_settled_file_without_waiting() {
-        let path = std::env::temp_dir().join(format!("tgw-read-old-{}.tgw", std::process::id()));
-        fs::write(&path, "clk: p\n").unwrap();
-        let file = fs::File::options().write(true).open(&path).unwrap();
-        file.set_times(
-            fs::FileTimes::new()
-                .set_modified(std::time::SystemTime::now() - Duration::from_secs(2)),
-        )
-        .unwrap();
-        drop(file);
-        let started = std::time::Instant::now();
-        assert_eq!(read_source(&path).unwrap(), "clk: p\n");
-        assert!(started.elapsed() < Duration::from_millis(80));
-        let _ = fs::remove_file(&path);
     }
 
     #[test]

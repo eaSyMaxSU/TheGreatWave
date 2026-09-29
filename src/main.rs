@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -6,23 +8,55 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tgw::InputFormat;
 
-const HELP: &str = "The Great Wave — compact timing diagrams\n\
-\n\
-Usage: tgw [OPTIONS] [INPUT]\n\
-\n\
-  INPUT                  Read .tgw or WaveJSON; omit or use - for stdin\n\
-  -i, --input PATH        Input file (alternative to positional INPUT)\n\
-  -o, --output PATH       Write output to a file; omit or use - for stdout\n\
-      --format FORMAT    Input syntax: auto (default), tgw, or json5\n\
-      --convert          Convert input to readable, canonical .tgw text\n\
-  -t, --indent N          Indent SVG output by N spaces (default: compact)\n\
-  -h, --help              Show this help\n\
-  -v, --version           Show version\n\
-\n\
-Examples:\n\
-  tgw diagram.tgw -o diagram.svg\n\
-  tgw legacy.json5 --convert -o diagram.tgw\n\
-  tgw --format tgw < diagram.tgw > diagram.svg\n";
+#[cfg(feature = "watch")]
+mod live;
+#[cfg(feature = "view")]
+mod view;
+
+const HELP: &str = "\
+The Great Wave — compact timing diagrams
+
+Usage: tgw [OPTIONS] [INPUT]
+
+Renders a .tgw or WaveJSON diagram to SVG. With --watch or --view, tgw keeps
+running and brings the output file, and the window, up to date every time
+INPUT is saved.
+
+Arguments:
+  INPUT                Diagram to read (.tgw or WaveJSON); omit or use - for stdin
+
+Options:
+  -i, --input PATH     Input file (alternative to positional INPUT)
+  -o, --output PATH    Write output to a file; omit or use - for stdout
+      --format FORMAT  Input syntax: auto (default), tgw, or json5
+      --convert        Convert input to readable, canonical .tgw text
+  -t, --indent N       Indent SVG output by N spaces (default: compact)
+  -w, --watch          Keep running and rewrite OUTPUT whenever INPUT is saved
+      --view           Open a window that redraws whenever INPUT is saved;
+                       with -o, OUTPUT is rewritten on every save as well
+  -h, --help           Show this help
+  -v, --version        Show version
+
+Live mode:
+  --watch and --view need an INPUT file; --watch also needs -o PATH. OUTPUT
+  holds the same bytes a one-off `tgw INPUT -o OUTPUT` writes, is replaced in
+  one step, and is left alone when nothing changed. A syntax error or a missing
+  INPUT keeps the last good picture and output and is reported as
+  path:line:col until the next good save.
+
+  In the window, signal names stay fixed while the waveforms scroll: use the
+  wheel or trackpad, hold Shift to scroll sideways, or drag a scrollbar.
+  Ctrl-W or Ctrl-Q closes it (Cmd-W or Cmd-Q on macOS). --watch runs until
+  Ctrl-C.
+
+Examples:
+  tgw diagram.tgw -o diagram.svg
+  tgw diagram.tgw -o diagram.svg --view
+  tgw diagram.tgw -o diagram.svg --watch
+  tgw diagram.tgw --view
+  tgw legacy.json5 --convert -o diagram.tgw
+  tgw --format tgw < diagram.tgw > diagram.svg
+";
 
 #[derive(Debug, PartialEq, Eq)]
 enum Action {
@@ -38,6 +72,18 @@ struct Options {
     format: InputFormat,
     indent: u8,
     action: Action,
+    watch: bool,
+    view: bool,
+}
+
+fn help() -> String {
+    let mut text = String::from(HELP);
+    if cfg!(not(feature = "watch")) {
+        text.push_str("\nThis build renders only; --watch and --view need the default features.\n");
+    } else if cfg!(not(feature = "view")) {
+        text.push_str("\nThis build has no window; --view needs the `view` feature.\n");
+    }
+    text
 }
 
 fn main() -> ExitCode {
@@ -57,6 +103,8 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
         format: InputFormat::Auto,
         indent: 0,
         action: Action::Render,
+        watch: false,
+        view: false,
     };
     let mut args = args.into_iter();
     let mut positional_only = false;
@@ -81,6 +129,8 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
                     return Ok(config);
                 }
                 "--convert" if inline.is_none() => config.action = Action::Convert,
+                "-w" | "--watch" if inline.is_none() => config.watch = true,
+                "--view" if inline.is_none() => config.view = true,
                 "-i" | "--input" | "-o" | "--output" | "--format" | "-t" | "--indent" => {
                     let value = match inline {
                         Some(value) => OsString::from(value),
@@ -128,15 +178,33 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
             config.input = Some(arg.into());
         }
     }
+    if config.watch || config.view {
+        let is_file = |path: &Option<PathBuf>| path.as_ref().is_some_and(|p| p.as_os_str() != "-");
+        if config.action == Action::Convert {
+            return Err("--convert cannot be combined with --watch or --view".into());
+        }
+        if !is_file(&config.input) {
+            return Err("--watch and --view need an input file, not stdin".into());
+        }
+        if config.output.is_some() && !is_file(&config.output) {
+            return Err("--watch and --view write to a file, not stdout".into());
+        }
+        if !config.view && config.output.is_none() {
+            return Err("--watch needs -o PATH".into());
+        }
+    }
     Ok(config)
 }
 
 fn run() -> Result<(), String> {
     let options = options(env::args_os().skip(1))?;
     match options.action {
-        Action::Help => return stdout(HELP.as_bytes()),
+        Action::Help => return stdout(help().as_bytes()),
         Action::Version => return stdout(format!("{}\n", tgw::VERSION).as_bytes()),
         _ => {}
+    }
+    if options.watch || options.view {
+        return live(options);
     }
     let label = options
         .input
@@ -152,21 +220,54 @@ fn run() -> Result<(), String> {
             .map_err(|e| format!("stdin: {e}"))?;
         source
     };
-    let mut output = Vec::new();
-    let result = if options.action == Action::Convert {
-        tgw::to_tgw_with_format(&source, options.format)
-            .map(|text| output.extend_from_slice(text.as_bytes()))
+    let output = if options.action == Action::Convert {
+        tgw::to_tgw_with_format(&source, options.format).map(|text| {
+            let mut bytes = text.into_bytes();
+            terminate(&mut bytes);
+            bytes
+        })
     } else {
-        tgw::render_with_format(&source, &mut output, options.indent, options.format)
-    };
-    result.map_err(|e| diagnostic(&label, &source, &e))?;
-    if !output.ends_with(b"\n") {
-        output.push(b'\n');
+        render_file(&source, options.format, options.indent)
     }
+    .map_err(|e| diagnostic(&label, &source, &e))?;
     if let Some(path) = options.output.as_ref().filter(|p| p.as_os_str() != "-") {
         fs::write(path, &output).map_err(|e| format!("{}: {e}", path.display()))
     } else {
         stdout(&output)
+    }
+}
+
+#[cfg(feature = "watch")]
+fn live(options: Options) -> Result<(), String> {
+    let input = options
+        .input
+        .ok_or("--watch and --view need an input file")?;
+    let job = live::Job::new(input, options.output, options.format, options.indent)?;
+    if options.view {
+        #[cfg(feature = "view")]
+        return view::run(job);
+        #[cfg(not(feature = "view"))]
+        return Err("--view needs a build with the `view` feature, which is on by default".into());
+    }
+    live::follow(job)
+}
+
+#[cfg(not(feature = "watch"))]
+fn live(_: Options) -> Result<(), String> {
+    Err("--watch and --view need a build with the default features".into())
+}
+
+/// The bytes `tgw INPUT -o OUTPUT` writes for a rendered diagram.
+fn render_file(source: &str, format: InputFormat, indent: u8) -> Result<Vec<u8>, tgw::Error> {
+    let mut output = Vec::new();
+    tgw::render_with_format(source, &mut output, indent, format)?;
+    terminate(&mut output);
+    Ok(output)
+}
+
+fn terminate(output: &mut Vec<u8>) {
+    if !output.ends_with(b"\n") {
+        output.push(b'\n');
     }
 }
 
@@ -279,6 +380,45 @@ mod tests {
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
         }
+    }
+
+    #[test]
+    fn live_mode_needs_a_file_to_watch_and_a_file_to_write() {
+        let watch = parse(&["a.tgw", "-o", "a.svg", "--watch"]).unwrap();
+        assert!(watch.watch && !watch.view);
+        let view = parse(&["--view", "a.tgw"]).unwrap();
+        assert!(view.view && view.output.is_none());
+        assert!(parse(&["-w", "--view", "-i", "a.tgw", "-o", "a.svg", "-t", "2"]).is_ok());
+        for args in [
+            vec!["a.tgw", "--watch"],
+            vec!["--watch", "-o", "a.svg"],
+            vec!["-", "--view"],
+            vec!["a.tgw", "-o", "-", "--watch"],
+            vec!["a.tgw", "--view", "-o", "-"],
+            vec!["a.json5", "--convert", "-o", "a.tgw", "--watch"],
+            vec!["a.tgw", "--view=yes"],
+        ] {
+            assert!(parse(&args).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn help_documents_every_option() {
+        let text = help();
+        for flag in [
+            "--input",
+            "--output",
+            "--format",
+            "--convert",
+            "--indent",
+            "--watch",
+            "--view",
+            "--help",
+            "--version",
+        ] {
+            assert!(text.contains(flag), "{flag}");
+        }
+        assert!(parse(&["--help", "--watch"]).unwrap().action == Action::Help);
     }
 
     #[test]

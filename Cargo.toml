@@ -8,17 +8,35 @@ license = "MIT"
 publish = false
 
 [features]
-view = ["dep:gpui-kit", "dep:notify"]
+default = ["view"]
+watch = ["dep:notify"]
+view = [
+    "watch",
+    "dep:gpui-kit",
+    "dep:image",
+    "dep:objc2",
+    "dep:objc2-app-kit",
+    "dep:objc2-foundation",
+    "dep:embed-resource",
+]
 
 [dependencies]
 gpui-kit = { version = "=0.7.0", optional = true, default-features = false }
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "ico"] }
 notify = { version = "8", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSData"] }
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = { version = "3", optional = true }
 
 [[bin]]
 name = "tgw"
 path = "src/main.rs"
 
-[[bin]]
-name = "tgw-view"
-path = "src/view.rs"
+[[example]]
+name = "icon"
 required-features = ["view"]
