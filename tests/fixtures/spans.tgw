@@ -1,0 +1,12 @@
+@title Spans and phase
+@tick 0
+@arc-font 16
+
+stretched: p..... ; period=2
+early: n.... ; phase=-1.5
+late: P.... ; phase=0.75
+held: 1
+minclk: p.
+marks: 0101010 ; node=.a.B.c.D ; over=1..0.. ; under=.2..0.
+
+@edge a->c pulse

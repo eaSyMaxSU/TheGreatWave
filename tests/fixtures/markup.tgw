@@ -1,0 +1,8 @@
+@title A & B < C > "D"
+@footer "line\none"
+@tick 0
+
+"sig & name": x3.45 => "a < b" "c & d" "e > f"
+quotes: 01.0 ; node=.a...b
+
+@edge a~>b "T > 1 & 2"

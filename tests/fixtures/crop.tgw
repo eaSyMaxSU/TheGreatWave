@@ -1,0 +1,6 @@
+@title Cropped bus
+@bounds 2 6
+@tick 0
+
+clk: p.........
+bus: x234567x => a b c d e f ; phase=0.5

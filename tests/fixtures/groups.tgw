@@ -1,0 +1,11 @@
+@title Nested groups
+@tick 0
+
+@group
+  @group Inner
+    a: 01..0
+    ---
+    b: x3.x => Z
+  @end
+@end
+"very long signal name that widens the gutter": p.....

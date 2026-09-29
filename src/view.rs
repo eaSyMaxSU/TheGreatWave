@@ -1223,11 +1223,26 @@ fn covers(image: &PaneImage, visible: Slice, scale: f32, dpr: f32, generation: u
 }
 
 fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>) {
+    // Names and waves are separate pictures. A tick centered on the split is
+    // fully on screen only when each picture keeps the part it covers.
+    let mut fit = LabelWindow {
+        x0: job.wave.x,
+        y0: job.wave.y,
+        x1: job.wave.x + job.wave.w,
+        y1: job.wave.y + job.wave.h,
+    };
+    if job.label.w >= 1.0 {
+        fit.x0 = fit.x0.min(job.label.x);
+        fit.y0 = fit.y0.min(job.label.y);
+        fit.x1 = fit.x1.max(job.label.x + job.label.w);
+        fit.y1 = fit.y1.max(job.label.y + job.label.h);
+    }
     let labels = (job.label.w >= 1.0).then(|| {
         raster_slice(
             &job.renderer,
             &job.svg,
             job.label,
+            fit,
             job.scale,
             job.dpr,
             job.generation,
@@ -1237,6 +1252,7 @@ fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>) {
         &job.renderer,
         &job.svg,
         job.wave,
+        fit,
         job.scale,
         job.dpr,
         job.generation,
@@ -1248,6 +1264,7 @@ fn raster_slice(
     renderer: &gpui_kit::SvgRenderer,
     svg: &str,
     slice: Slice,
+    fit: LabelWindow,
     scale: f32,
     dpr: f32,
     generation: u64,
@@ -1267,7 +1284,7 @@ fn raster_slice(
         .min(1.0);
     device_w = (device_w * cap).round().clamp(1.0, MAX_DEVICE_PX);
     device_h = (device_h * cap).round().clamp(1.0, MAX_DEVICE_PX);
-    let sliced = slice_svg(svg, slice.x, slice.y, slice.w, slice.h)?;
+    let sliced = slice_visible(svg, slice.x, slice.y, slice.w, slice.h, fit)?;
     let parsed = renderer.parse_svg(sliced.as_bytes()).ok()?;
     let image = renderer
         .render_parsed(
@@ -1289,10 +1306,42 @@ fn raster_slice(
     })
 }
 
+#[cfg(test)]
 fn slice_svg(svg: &str, x: f32, y: f32, w: f32, h: f32) -> Option<String> {
+    slice_visible(
+        svg,
+        x,
+        y,
+        w,
+        h,
+        LabelWindow {
+            x0: x,
+            y0: y,
+            x1: x + w,
+            y1: y + h,
+        },
+    )
+}
+
+/// `fit` is the whole on-screen picture. A label is drawn when it lies inside
+/// that picture and meets this pane, so a tick on the split is not discarded.
+fn slice_visible(svg: &str, x: f32, y: f32, w: f32, h: f32, fit: LabelWindow) -> Option<String> {
     let start = svg.find("<svg")?;
     svg[start..].find('>')?;
-    Some(retain_whole_labels(svg, x, y, x + w, y + h, w, h))
+    Some(retain_whole_labels(
+        svg,
+        SliceRequest {
+            clip: LabelWindow {
+                x0: x,
+                y0: y,
+                x1: x + w,
+                y1: y + h,
+            },
+            fit,
+            root_w: w,
+            root_h: h,
+        },
+    ))
 }
 
 fn root_tag(tag: &str, x: f32, y: f32, w: f32, h: f32) -> String {
@@ -1357,16 +1406,18 @@ struct LabelWindow {
     y1: f32,
 }
 
-fn retain_whole_labels(
-    svg: &str,
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
+struct SliceRequest {
+    clip: LabelWindow,
+    fit: LabelWindow,
     root_w: f32,
     root_h: f32,
-) -> String {
-    let window = LabelWindow { x0, y0, x1, y1 };
+}
+
+fn retain_whole_labels(svg: &str, request: SliceRequest) -> String {
+    let window = request.clip;
+    let fit = request.fit;
+    let root_w = request.root_w;
+    let root_h = request.root_h;
     let mut out = String::with_capacity(svg.len());
     let mut stack = vec![TextStyle {
         x: 0.0,
@@ -1414,7 +1465,7 @@ fn retain_whole_labels(
             });
             if let Some(pill_end) = label_pill_end(svg, tag_end) {
                 let style = style_after_group(parent, tag);
-                if pill_fits(svg, tag_end, pill_end, style, window) {
+                if pill_fits(svg, tag_end, pill_end, style, window, fit) {
                     out.push_str(&svg[i..pill_end]);
                 }
                 i = pill_end;
@@ -1440,7 +1491,7 @@ fn retain_whole_labels(
                 anchor: TextAnchor::Start,
                 font: 12.0,
             });
-            if text_fits(&svg[i..text_end], style, window) {
+            if text_fits(&svg[i..text_end], style, window, fit) {
                 out.push_str(&svg[i..text_end]);
             }
             i = text_end;
@@ -1492,6 +1543,7 @@ fn pill_fits(
     pill_end: usize,
     style: TextStyle,
     window: LabelWindow,
+    fit: LabelWindow,
 ) -> bool {
     let body = &svg[after_group..pill_end];
     let Some(text_at) = body.find("<text") else {
@@ -1501,7 +1553,7 @@ fn pill_fits(
         return true;
     };
     let text_end = text_at + rel_end + "</text>".len();
-    text_fits(&body[text_at..text_end], style, window)
+    text_fits(&body[text_at..text_end], style, window, fit)
 }
 
 fn style_after_group(mut style: TextStyle, tag: &str) -> TextStyle {
@@ -1521,14 +1573,19 @@ fn style_after_group(mut style: TextStyle, tag: &str) -> TextStyle {
     style
 }
 
-fn text_fits(element: &str, style: TextStyle, window: LabelWindow) -> bool {
+fn text_fits(element: &str, style: TextStyle, window: LabelWindow, fit: LabelWindow) -> bool {
     let Some((left, top, right, bottom)) = text_span(element, style) else {
         return true;
     };
-    left >= window.x0 - 0.5
-        && right <= window.x1 + 0.5
-        && top >= window.y0 - 0.5
-        && bottom <= window.y1 + 0.5
+    let inside = left >= fit.x0 - 0.5
+        && right <= fit.x1 + 0.5
+        && top >= fit.y0 - 0.5
+        && bottom <= fit.y1 + 0.5;
+    let hits = right > window.x0 + 0.5
+        && left < window.x1 - 0.5
+        && bottom > window.y0 + 0.5
+        && top < window.y1 - 0.5;
+    inside && hits
 }
 
 fn text_span(element: &str, mut style: TextStyle) -> Option<(f32, f32, f32, f32)> {
@@ -2062,6 +2119,96 @@ mod tests {
                 .filter(|pixel| pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)
                 .count();
             assert!(ink > 20, "slice ink {ink}");
+        }
+    }
+
+    #[test]
+    fn ticks_on_the_split_are_kept_for_the_picture() {
+        let svg = tgw::render(include_str!("../tests/fixtures/ticks.tgw")).unwrap();
+        let frame = diagram_frame(&svg).unwrap();
+        let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+        let fit = LabelWindow {
+            x0: layout.label.x.min(layout.wave.x),
+            y0: layout.label.y.min(layout.wave.y),
+            x1: (layout.label.x + layout.label.w).max(layout.wave.x + layout.wave.w),
+            y1: (layout.label.y + layout.label.h).max(layout.wave.y + layout.wave.h),
+        };
+        let labels = slice_visible(
+            &svg,
+            layout.label.x,
+            layout.label.y,
+            layout.label.w,
+            layout.label.h,
+            fit,
+        )
+        .unwrap();
+        let waves = slice_visible(
+            &svg,
+            layout.wave.x,
+            layout.wave.y,
+            layout.wave.w,
+            layout.wave.h,
+            fit,
+        )
+        .unwrap();
+        let shown = format!("{labels}{waves}");
+        assert!(
+            shown.contains(">0.0<"),
+            "the first fractional tick must stay visible"
+        );
+        assert!(
+            shown.contains(">idle<"),
+            "the first footer label must stay visible"
+        );
+        assert!(
+            !slice_svg(&svg, frame.gutter, 0.0, 8.0, frame.height)
+                .unwrap()
+                .contains(">0.0<"),
+            "a slice that cuts through the label still omits it"
+        );
+    }
+
+    /// The pictures the watcher writes are the ones the window slices and draws.
+    #[test]
+    fn edge_case_diagrams_frame_slice_and_raster() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let renderer = SvgRenderer::new(Arc::new(()));
+        for name in [
+            "alphabet", "ticks", "spans", "markup", "unicode", "crop", "paths", "empty", "groups",
+        ] {
+            let source = std::fs::read_to_string(root.join(format!("{name}.tgw"))).unwrap();
+            let svg = tgw::render(&source).unwrap();
+            let parsed = renderer.parse_svg(svg.as_bytes()).unwrap();
+            let image = renderer
+                .render_parsed(
+                    &parsed,
+                    SvgSize::Size(size(DevicePixels(640), DevicePixels(1))),
+                )
+                .unwrap();
+            let ink = image
+                .as_bytes(0)
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)
+                .count();
+            assert!(ink > 10, "{name} has no ink ({ink})");
+            let frame = diagram_frame(&svg).unwrap_or_else(|| panic!("{name} has no frame"));
+            let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+            for (part, slice) in [("labels", layout.label), ("waves", layout.wave)] {
+                if slice.w < 1.0 || slice.h < 1.0 {
+                    continue;
+                }
+                let sliced = slice_svg(&svg, slice.x, slice.y, slice.w, slice.h).unwrap();
+                assert!(
+                    sliced.ends_with("</svg>"),
+                    "{name} {part} closing tag was rewritten"
+                );
+                renderer
+                    .parse_svg(sliced.as_bytes())
+                    .unwrap_or_else(|error| panic!("{name} {part} slice: {error}"));
+            }
         }
     }
 }

@@ -170,6 +170,13 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
         }
         paint.body.extend_from_slice(b"</g>");
         if let Body::Path(d) = &lane.body {
+            // The path is stored in cycle units and scaled into the lane.
+            // resvg ignores vector-effect, so a 1-unit stroke becomes a filled
+            // band. The width is the inverse of the scale, which is 1px after
+            // the transform in every renderer.
+            let sx = 2.0 * XS as f64 * lane.period * doc.hscale as f64;
+            let sy = -(YS as f64);
+            let stroke = 1.0 / sx.abs().max(sy.abs());
             paint.body.extend_from_slice(b"<g transform=\"translate(");
             push_f64(
                 &mut paint.body,
@@ -178,13 +185,14 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
             paint.body.push(b',');
             push_i64(&mut paint.body, YS);
             paint.body.extend_from_slice(b") scale(");
-            push_f64(
-                &mut paint.body,
-                2.0 * XS as f64 * lane.period * doc.hscale as f64,
-            );
+            push_f64(&mut paint.body, sx);
             paint.body.push(b',');
-            push_i64(&mut paint.body, -YS);
-            paint.body.extend_from_slice(b")\"><path fill=\"none\" stroke=\"#000\" stroke-width=\"1\" vector-effect=\"non-scaling-stroke\" d=\"");
+            push_f64(&mut paint.body, sy);
+            paint
+                .body
+                .extend_from_slice(b")\"><path fill=\"none\" stroke=\"#000\" stroke-width=\"");
+            push_f64(&mut paint.body, stroke);
+            paint.body.extend_from_slice(b"\" d=\"");
             push_esc(&mut paint.body, d);
             paint.body.extend_from_slice(b"\"/></g>");
         }

@@ -1,0 +1,11 @@
+@title Fractional ticks
+@tick 0 0.5
+@tock off
+@every 2
+@foot-tick "idle" "request" "reply"
+@foot-every 2
+@scale 2
+@grid off
+
+clk: p.....
+data: x345x => a b c

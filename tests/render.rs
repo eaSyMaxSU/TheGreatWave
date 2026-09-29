@@ -61,18 +61,29 @@ fn fixtures_render() {
     assert!(marks.contains("-gd\""));
 }
 
+const SNAPSHOTS: &[&str] = &[
+    "step4",
+    "arcs",
+    "arcs1",
+    "clocks",
+    "gaps",
+    "bundles",
+    "marks",
+    "precision",
+    "alphabet",
+    "ticks",
+    "spans",
+    "markup",
+    "unicode",
+    "crop",
+    "paths",
+    "empty",
+    "groups",
+];
+
 #[test]
 fn snapshots() {
-    for name in [
-        "step4",
-        "arcs",
-        "arcs1",
-        "clocks",
-        "gaps",
-        "bundles",
-        "marks",
-        "precision",
-    ] {
+    for name in SNAPSHOTS {
         let svg = render_fixture(name);
         let path = root().join("tests/fixtures").join(format!("{name}.svg"));
         if std::env::var_os("UPDATE_SNAPSHOTS").as_deref() == Some(std::ffi::OsStr::new("1")) {
@@ -86,6 +97,92 @@ fn snapshots() {
             });
             assert_eq!(expected, svg, "snapshot {name}");
         }
+        assert_well_formed(name, &svg);
+    }
+}
+
+#[test]
+fn edge_case_pictures_keep_their_marks() {
+    let alphabet = render_fixture("alphabet");
+    for name in ["p", "n", "P", "N", "levels", "hiz", "colors", "sub", "gap"] {
+        assert!(alphabet.contains(&format!(">{name}<")), "{name}");
+    }
+    assert!(alphabet.contains("-xh\""));
+    assert!(alphabet.contains("-k0\""));
+
+    let ticks = render_fixture("ticks");
+    assert!(ticks.contains(">idle<"));
+    assert!(ticks.contains(">reply<"));
+    assert!(
+        !ticks.contains(">request<"),
+        "foot-every drops the middle label"
+    );
+    assert!(ticks.contains(">0.5<") || ticks.contains(">1.0<"));
+    assert!(!ticks.contains("-gd\""), "grid off");
+
+    let spans = render_fixture("spans");
+    assert!(spans.contains(">pulse<"));
+    assert!(spans.contains("arrowhead"));
+    assert!(dimension(&spans, "width") > dimension(&render_fixture("crop"), "width"));
+
+    let markup = render_fixture("markup");
+    assert!(markup.contains("A &amp; B &lt; C &gt;"));
+    assert!(markup.contains("a &lt; b"));
+    assert!(markup.contains("&#10;"));
+    assert!(markup.contains("T &gt; 1 &amp; 2"));
+
+    let unicode = render_fixture("unicode");
+    assert!(unicode.contains("时钟"));
+    assert!(unicode.contains("就绪"));
+    assert!(unicode.contains("完成"));
+
+    let crop = render_fixture("crop");
+    assert!(
+        dimension(&crop, "width") < 320.0,
+        "cropped {}",
+        dimension(&crop, "width")
+    );
+    assert!(crop.contains(">b<") && crop.contains(">f<"));
+    assert!(
+        !crop.contains(">a<"),
+        "the value before the window is cropped away"
+    );
+
+    let paths = render_fixture("paths");
+    assert!(paths.contains("C1.5,0"));
+    assert!(paths.contains("A0.5,0.5"));
+
+    let empty = render_fixture("empty");
+    assert!(empty.contains(">Nothing here<"));
+    assert!(empty.contains(">0 signal lanes<") || empty.contains("0 signal lanes"));
+    assert!(!empty.contains("<path"));
+
+    let groups = render_fixture("groups");
+    assert!(groups.contains(">Inner<"));
+    assert!(groups.contains("very long signal name"));
+    assert!(groups.contains("rotate(270)"));
+}
+
+fn assert_well_formed(name: &str, svg: &str) {
+    assert!(svg.starts_with("<svg "), "{name}");
+    assert!(svg.ends_with("</svg>"), "{name}");
+    assert!(!svg.contains("</svg "), "{name} rewritten a closing tag");
+    assert!(svg.contains("viewBox=\"0 0 "), "{name}");
+    let width = dimension(svg, "width");
+    let height = dimension(svg, "height");
+    assert!(width > 0.0 && height > 0.0, "{name} {width}x{height}");
+    let mut ids = std::collections::BTreeSet::new();
+    let mut rest = svg;
+    while let Some(index) = rest.find("id=\"") {
+        rest = &rest[index + 4..];
+        let id = rest.split('"').next().unwrap();
+        assert!(ids.insert(id.to_string()), "{name} duplicate id {id}");
+    }
+    rest = svg;
+    while let Some(index) = rest.find("url(#") {
+        rest = &rest[index + 5..];
+        let id = rest.split(['"', '\'', ')']).next().unwrap();
+        assert!(ids.contains(id), "{name} unresolved #{id}");
     }
 }
 
@@ -264,7 +361,8 @@ fn inline_documents_isolate_paint_and_preserve_text() {
 fn paths_preserve_curves_arcs_and_native_scaling() {
     let svg = tgw::render("{signal:[{name:'analog',period:2,wave:['pw',{d:'M0,0 C1,0 1,1 2,1 A1,1 30 0 1 3,0'}]}],config:{hscale:2}}").unwrap();
     assert!(svg.contains("scale(160,-20)"));
-    assert!(svg.contains("vector-effect=\"non-scaling-stroke\""));
+    assert!(svg.contains("stroke-width=\"0.006\""));
+    assert!(!svg.contains("vector-effect"));
     assert!(svg.contains("A1,1 30 0 1 3,0"));
     assert!(dimension(&svg, "width") > 480.0);
 }

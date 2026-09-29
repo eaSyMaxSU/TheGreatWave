@@ -156,9 +156,46 @@ fn follow_saves(name: &str, mode: &str) {
     let _ = fs::remove_dir_all(&dir);
 }
 
+/// Every edge-case picture, in one live process, must match a one-off render.
+fn follow_edge_cases(name: &str, mode: &str) {
+    let dir = scratch(name);
+    let input = dir.join("diagram.tgw");
+    let output = dir.join("diagram.svg");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let names = [
+        "alphabet", "ticks", "spans", "markup", "unicode", "crop", "paths", "empty", "groups",
+    ];
+    let sources: Vec<String> = names
+        .iter()
+        .map(|name| fs::read_to_string(fixtures.join(format!("{name}.tgw"))).unwrap())
+        .collect();
+    let expected: Vec<Vec<u8>> = sources.iter().map(|source| one_off(&dir, source)).collect();
+    fs::write(&input, &sources[0]).unwrap();
+
+    let mut live = Live::start(&input, &output, mode);
+    live.wait_for(&output, &expected[0], names[0]);
+    for (index, source) in sources.iter().enumerate().skip(1) {
+        fs::write(&input, source).unwrap();
+        live.wait_for(&output, &expected[index], names[index]);
+    }
+    fs::write(&input, "clk: p?\n").unwrap();
+    live.assert_kept(
+        &output,
+        expected.last().unwrap(),
+        "after a broken save of an edge-case diagram",
+    );
+    drop(live);
+    let _ = fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn watch_rewrites_the_output_on_every_good_save() {
     follow_saves("watch", "--watch");
+}
+
+#[test]
+fn watch_follows_every_edge_case_picture() {
+    follow_edge_cases("watch-edges", "--watch");
 }
 
 #[cfg(feature = "view")]
@@ -166,6 +203,13 @@ fn watch_rewrites_the_output_on_every_good_save() {
 #[ignore = "opens a window; run with --ignored where a display is available"]
 fn view_rewrites_the_output_on_every_good_save() {
     follow_saves("view", "--view");
+}
+
+#[cfg(feature = "view")]
+#[test]
+#[ignore = "opens a window; run with --ignored where a display is available"]
+fn view_follows_every_edge_case_picture() {
+    follow_edge_cases("view-edges", "--view");
 }
 
 #[cfg(all(feature = "view", any(target_os = "linux", target_os = "freebsd")))]
