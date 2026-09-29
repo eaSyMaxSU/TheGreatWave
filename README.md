@@ -2,7 +2,7 @@
 
 <img src="assets/icon/tgw.svg" width="88" height="88" align="right" alt="The Great Wave icon">
 
-`tgw` turns readable timing diagrams into compact, self-contained SVGs. Write aligned signals in a `.tgw` file; there are no braces, commas, or repeated `name`/`wave` keys. One binary renders, keeps the SVG current while you edit, and shows the diagram in a live window. The renderer and the Rust library have no dependencies.
+`tgw` draws timing diagrams. A `.tgw` file is a list of signals, one per line, and the program turns it into a compact SVG. The same binary can keep that SVG current while you edit, and can show the diagram in a window. The rendering library has no dependencies.
 
 ```text
 @title Bus transfer
@@ -17,7 +17,7 @@ acknowledge: 1.....|01.
 
 ![Bus transfer](examples/transfer.svg)
 
-## Use
+## Render
 
 ```sh
 cargo build --release
@@ -25,58 +25,66 @@ cargo build --release
 ./target/release/tgw < examples/transfer.tgw > transfer.svg
 ```
 
-`-i/--input` also selects an input file; `-o/--output` writes a file. Omit the input, or use `-`, to read stdin. `--indent 2` formats the SVG. `tgw --help` documents every option, live mode, and the window controls. Errors include the source line and column.
+`-i` selects the input. `-o` selects the output. Omit the input, or pass `-`, to read stdin. Omit `-o`, or pass `-`, to write stdout. `--indent 2` pretty-prints the SVG. `tgw --help` lists every flag.
 
-Rendering will not write the SVG over the diagram. The same path, a symlink, and a hard link are all refused. On Windows, another case of the same name is the same file.
+A render refuses to replace the diagram with the SVG. The same path, a symlink, and a hard link are all the same file. On Windows, a different case of the name is the same file too.
 
-Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automatically, or selected with `--format tgw|json5|auto`. Convert old diagrams once:
+Errors name the file, line, and column.
+
+## Convert
+
+WaveJSON and JSON5 still render. The syntax is detected automatically, or chosen with `--format tgw`, `json5`, or `auto`.
 
 ```sh
 ./target/release/tgw old-diagram.json5 --convert -o diagram.tgw
 ```
 
-`--convert` also formats native diagrams with aligned waveform columns. Conversion preserves supported diagram data; comments and unsupported JSON properties are omitted.
+`--convert` rewrites a native diagram into aligned columns as well. Supported data is kept. Comments and unsupported JSON properties are left out.
 
-## Live view
-
-`--view` opens the diagram in a window; `--watch` runs without one. Either way `tgw` keeps running, and every save of the input brings the output file, and the window, up to date:
+## Watch and view
 
 ```sh
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --view   # window and file
 ./target/release/tgw examples/transfer.tgw --view                   # window only
-./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only, e.g. over SSH
+./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only
 ```
 
-Live mode needs an input file, not stdin, and `--watch` also needs `-o`. It cannot be combined with `--convert`. A directory is rejected as either the diagram or the output, and the output's parent directory must already exist. The output holds the same bytes a one-off `tgw INPUT -o OUTPUT` writes with the same `--indent` and `--format`, and it is left alone when a save changes nothing. A new picture is published by renaming a temporary file into place. If that rename is refused, as when Windows holds the file open, the picture is written in place instead. Editors that save through a temporary file and rename it are followed. The input is also checked five times a second, so a save is not missed where file events are unreliable, such as on network drives. On Windows those checks compare paths without regard to case, and they use the file index so a replaced file is noticed even when the size and timestamp stay the same.
+`--view` opens a window. `--watch` does not. Both keep running, and every save of the input refreshes the picture. With `-o`, the file is refreshed too.
 
-A syntax error, a missing file, or an output that cannot be written keeps the last good picture and output. The problem is reported as `path:line:col: message` for a diagram error, or as the operating-system error for a write, until the next good save: in the window's status bar, or on stderr for `--watch`. A failed write is retried at the poll interval, not in a tight loop. Ctrl-W or Ctrl-Q closes the window (Command-W or Command-Q on macOS); `--watch` stops with Ctrl-C.
+Live mode needs a real input file. `--watch` also needs `-o`. `--convert` cannot be combined with either. A directory is rejected, and the output directory must already exist.
 
-Signal names stay fixed on the left. Tick numbers, the title, and the waveforms scroll together. Drag a scrollbar, click its track, or use the trackpad; hold Shift to move a vertical scroll sideways. A diagram wider than the window scrolls horizontally, and a taller one scrolls vertically. A tick label that would be cut by the edge is omitted until it fits. The picture keeps a small, equal padding on every edge. A short diagram opens in a window snug to the drawing. Resizing the window keeps that size and uses the extra room as padding. The horizontal scrollbar appears when the waveform is wider than the window; a taller diagram scrolls vertically. A diagram that fits, including a short clock, is enlarged and stays fully visible. `@bounds` still limits the time range that is drawn.
+The output is the same bytes as a one-off render with the same `--indent` and `--format`. An unchanged save does not rewrite it. A new picture is published by renaming a temporary file into place. When a rename is refused, as when Windows is holding the file open, the picture is written in place. Editors that save by renaming a sibling are followed. The file is also polled five times a second, so a save is still seen on a network drive. On Windows the poll compares names without regard to case, and uses the file index so a replaced file is seen even when the size and timestamp do not change.
+
+A syntax error, a missing file, or a write that fails leaves the last good picture in place. A diagram error is reported as `path:line:col: message`. A write error is the operating-system error. The window shows it in the status bar; `--watch` prints it on stderr. A failed write is tried again at the next poll. Ctrl-W or Ctrl-Q closes the window (Command on macOS). `--watch` stops on Ctrl-C.
+
+In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. Use the trackpad or a scrollbar; hold Shift to scroll sideways. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
+
+The saved SVG stays compact: a long clock is one pattern. The window paints only the visible slice, repeating that pattern as strokes across the part on screen.
 
 ## Builds
 
-| Command | Includes |
+| Command | What you get |
 | --- | --- |
-| `cargo build --release` | Renderer, `--watch`, and `--view` (default) |
-| `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, without GUI libraries |
-| `cargo build --release --no-default-features` | Renderer only, with no dependencies |
+| `cargo build --release` | Renderer, `--watch`, and `--view` |
+| `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, no GUI libraries |
+| `cargo build --release --no-default-features` | Renderer only, no dependencies |
 
-`tgw --help` says which modes a build leaves out. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the Rust release that CI uses; rustup installs it on first use, so local builds and lints match CI. Programs that only render can depend on the library with `default-features = false`.
+`tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler CI uses. A program that only renders can depend on the library with `default-features = false`.
 
 ## Platforms
 
 CI builds and tests macOS, Windows, and Linux on every push.
 
-- **macOS**: the Dock shows the tgw icon while a window is open.
-- **Windows**: the icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the resource compiler from the Visual Studio Build Tools, or `windres` for the GNU toolchain; without one the build prints a warning and continues without the icon. Files saved with CRLF line endings render exactly like LF. Sharing and lock violations while an editor is still writing are treated as transient, and the next poll reads the finished file.
-- **Linux**: the window runs on Wayland or X11. Without `WAYLAND_DISPLAY` or `DISPLAY`, `--view` exits with a message, and `--watch` still works. Building the window needs the xkbcommon, xcb, Wayland, and fontconfig development packages; on Debian or Ubuntu:
+- **macOS.** The Dock shows the tgw icon while a window is open.
+- **Windows.** The icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the Visual Studio resource compiler, or `windres` for the GNU toolchain. Without one, the build warns and continues. CRLF sources render the same picture as LF. A sharing or lock violation while an editor is still saving is treated as transient, and the next poll reads the finished file.
+- **Linux.** The window runs on Wayland or X11. With neither `WAYLAND_DISPLAY` nor `DISPLAY` set, `--view` exits and names `--watch` as the alternative. Building the window needs:
 
 ```sh
 sudo apt install pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
   libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
 ```
 
-X11 takes the window icon from `tgw` itself. Wayland docks and file managers find it through the desktop entry:
+X11 takes the icon from the binary. Wayland looks up the desktop entry:
 
 ```sh
 cargo install --path .
@@ -86,17 +94,17 @@ install -Dm644 assets/icon/tgw.svg ~/.local/share/icons/hicolor/scalable/apps/tg
 
 ## Icon
 
-A square pulse, the first edge of every timing diagram, swells into Hokusai's breaking wave. `assets/icon/tgw.svg` is the master. The Dock PNG and the multi-size Windows ICO are generated from it:
+`assets/icon/tgw.svg` is the master: a square pulse that becomes Hokusai's wave. The Dock PNG and the Windows ICO are generated from it.
 
 ```sh
 cargo run --example icon
 ```
 
-## Native format
+## Diagram language
 
-One signal per line: `name: wave`. Names can contain spaces and bus indices, such as `data [7:0]`. Blank lines are ignored; `---` inserts a blank lane. `#` starts a comment outside quotes. Indentation is cosmetic.
+One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. `#` starts a comment outside quotes. Indentation does not matter.
 
-Separate data labels with spaces after `=>`. Quote a label containing spaces, `#`, `;`, quotes, or `=>`. Single and double quotes support `\n`, `\r`, `\t`, `\\`, escaped quotes, and `\uXXXX`; Unicode text also works directly.
+Labels come after `=>`, separated by spaces. Quote a label that contains a space, `#`, `;`, a quote, or `=>`. Quotes accept `\n`, `\r`, `\t`, `\\`, escaped quotes, and `\uXXXX`. Unicode can also be written directly.
 
 ```text
 @group Master
@@ -111,55 +119,71 @@ Separate data labels with spaces after `=>`. Quote a label containing spaces, `#
 @edge a<->b write pulse
 ```
 
-Groups use `@group name` and `@end`, and can nest. `@group` without a name draws an unlabeled bracket. Lane options follow semicolons:
+`@group Name` and `@end` nest, up to 64 deep. `@group` with no name draws an unlabeled bracket.
 
-| Option | Meaning |
+| Option | Effect |
 | --- | --- |
-| `period=2` | Stretch the signal's time units; must be positive. |
-| `phase=0.25` | Advance by a quarter cycle; negative values delay. |
-| `node=..a..B` | Name event positions; uppercase nodes have no visible node label. |
-| `over=1..0` / `under=2..0` | Colored annotation spans; `.` extends and `0` ends a span. |
+| `period=2` | Make each symbol that many cycles long. Must be positive. |
+| `phase=0.25` | Shift the signal earlier by a quarter cycle. Negative values start it later. |
+| `node=.a.B.` | Name positions on the wave. An uppercase name is a node with no label. |
+| `over=1..0` | A colored bar above the lane. `1`–`9` choose the color, `.` continues, `0` ends. |
+| `under=2..0` | The same bar below the lane. |
 
-The wave alphabet is `p n P N h l H L 0 1 x d u z = 2-9`. Clocks are `p/n`, with arrows for `P/N`; `x` is unknown, `z` is high impedance, and `=/2-9` are data buses. `.` repeats, `|` marks a gap, and `<...>` halves the duration of the enclosed level/bus symbols. Spaces within waveforms are ignored. A clock retains at least two half-cycle bricks; a level retains at least one. Fractional periods use this discrete half-cycle geometry, and annotations follow the resulting timing.
+The wave symbols are `p n P N h l H L 0 1 x d u z = 2-9`.
+
+| Symbols | Meaning |
+| --- | --- |
+| `p` `n` | Clock, rising or falling. |
+| `P` `N` | The same clocks, with an arrow on the edge. |
+| `h` `l` `H` `L` `0` `1` | High and low levels. `H` and `L` carry an arrow. |
+| `x` | Unknown. |
+| `d` `u` | Weak low and weak high, drawn dashed. |
+| `z` | High impedance, a line at mid level. |
+| `=` `2`–`9` | A data bus. The digit selects the color. |
+| `.` | Repeat the previous symbol. |
+| `\|` | A gap in the trace. |
+| `<...>` | Draw the enclosed symbols at half duration. |
+
+Spaces inside a wave are ignored. A clock is at least two half-cycles. A level is at least one. A fractional period still lands on that half-cycle grid, and nodes, bars, and edges follow it.
 
 | Directive | Example |
 | --- | --- |
-| Title / footer | `@title Bus transfer`, `@footer Figure 1` |
-| Cycle boundary numbers | `@tick 0` |
-| Numbers between boundaries | `@tock 0` |
-| Numeric start and step | `@tick 0 0.5` |
-| Explicit tick labels | `@tick "idle" "request" "reply"` |
-| Footer ticks | `@foot-tick 0`, `@foot-tock 0` |
-| Label interval | `@every 2`, `@foot-every 2` |
-| Horizontal scale | `@scale 2` (integer 1–100) |
-| Visible cycle window | `@bounds 10 30` (end exclusive) |
-| Grid visibility | `@grid off` or `@grid on` |
+| Title and footer | `@title Bus transfer`, `@footer Figure 1` |
+| Tick on each cycle | `@tick 0` |
+| Tick between cycles | `@tock 0` |
+| Start and step | `@tick 0 0.5` |
+| Named ticks | `@tick "idle" "request" "reply"` |
+| Footer ticks | `@foot-tick 0`, `@foot-tock 9` |
+| Keep every Nth label | `@every 2`, `@foot-every 2` |
+| Cycle width | `@scale 2`, an integer from 1 to 100 |
+| Drawn range | `@bounds 2 6`, end exclusive |
+| Grid | `@grid on`, `@grid off` |
 | Edge label size | `@arc-font 12` |
-| Global gap marks | `@gaps . . 1 . 2` |
-| Connection | `@edge a~>b propagation delay` |
-| Explicit empty diagram | `@empty` |
+| Gaps along the whole diagram | `@gaps . . 1 . \|` |
+| An edge between nodes | `@edge a~>b propagation delay` |
+| A diagram with no lanes | `@empty` |
 
-Tick directives accept `off`. Numeric `start` is the displayed starting value, and optional `step` controls the increment and decimal precision. Unit ticks follow `@bounds`; explicitly scaled series retain their chosen start. Tick labels are thinned when needed to avoid collisions, with at most 10,000 numeric labels per series.
+Any tick directive accepts `off`. For a numeric series, the first number is the start and the optional second is the step, which also sets the decimal places. A series with step 1 follows `@bounds`. Any other series keeps the start you wrote. Labels are thinned when they would collide, and a series stops at 10,000 labels.
 
-Native SVG paths support analog or custom shapes. X coordinates are cycles; Y coordinates run from 0 (low) to 1 (high). Standard SVG commands, curves, arcs, relative coordinates, and exponents are accepted. `period`, `phase`, and `@scale` apply to paths too; strokes keep a constant width.
+An analog trace is an SVG path. X is in cycles. Y runs from 0 at the low rail to 1 at the high rail. Curves, arcs, relative commands, and exponents are accepted. `period`, `phase`, and `@scale` apply. The stroke stays one pixel wide after scaling.
 
 ```text
-analog: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 L4,0
+analog: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 A0.5,0.5 0 0 1 4,1 L5,0
 ```
 
-Register and assign diagrams are outside the supported format. WaveJSON uses the JSON5 subset customary for timing diagrams: quoted or bare keys, single/double-quoted strings, comments, trailing commas, arrays, objects, finite numbers, booleans, and null.
+Register and assign diagrams are not supported. JSON5 input accepts the subset usual for these diagrams: bare or quoted keys, either quote style, comments, trailing commas, arrays, objects, finite numbers, booleans, and null.
 
-## Rendering and performance
+## Picture
 
-Clocks use shared, padded SVG patterns with complete arrowheads and consistent stroke weight. Bus transitions meet at the same crossing, labels center on the visible value, and gap marks clear the trace underneath. SVGs include a title, description, document-scoped paint IDs, and no global CSS, so different diagrams can be embedded on the same page.
+Bus transitions cross at the same point, and a label is centered on the visible part of its value. A gap clears the trace underneath it. Each SVG has a title, a description, and paint ids that belong to that document only. There is no global stylesheet, so several diagrams can sit on one page.
 
-Rendering scales with source length and visible runs. A 10,000-cycle clock is still one clock pattern and a constant number of drawing elements. Repeated holds remain one stroke. Horizontal cropping skips hidden geometry, including annotations, instead of emitting an entire long diagram. `render_into` reuses the caller's output allocation. Fonts use system fallbacks; metrics reserve space conservatively, so appearance may vary slightly between platforms.
-
-Run the warmed-buffer benchmark for median and p95 timings, SVG sizes, and native/JSON5 comparisons:
+A long clock is one shared pattern. A long hold is one stroke. `@bounds` drops geometry outside the window, including annotations, instead of emitting it and hiding it. `render_into` reuses the caller's buffer. Text is measured against a conservative sans-serif, so a label's exact width can differ slightly by platform.
 
 ```sh
 cargo run --release --example long_wave
 ```
+
+That example reports median and p95 render times, SVG sizes, and native versus JSON5 for long signals.
 
 ## Library
 
@@ -171,7 +195,7 @@ let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 # Ok::<(), tgw::Error>(())
 ```
 
-`render_opts` adds SVG indentation; `render_with_format` selects `InputFormat::Auto`, `Tgw`, or `Json5`. `to_tgw_with_format` does the same for conversion. Rendering clears the output buffer on an error. Invalid paths, excessive nesting, nonfinite timing, and out-of-range geometry return errors.
+`render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
 ## Checks
 
@@ -189,21 +213,21 @@ cargo doc --locked --no-deps
 cargo build --locked --release
 ```
 
-Clippy and the tests cover three builds: the default, with the renderer, `--watch`, and `--view`; the headless watcher; and the renderer alone. The renderer is also tested in release. CI runs this set on macOS, Windows, and Linux, with `--locked` so the build matches `Cargo.lock`. `RUSTFLAGS=-D warnings` is set in CI.
+The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. CI runs this set on macOS, Windows, and Linux against `Cargo.lock`, with warnings denied. On Linux the window runs under Xvfb.
 
-The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`, and must render identically with CRLF line endings. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, compact long signals, and edge-case pictures: the wave alphabet, fractional ticks, spans and phase, markup escapes, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/watch.rs` runs the real binary, with `--watch` and, when run with `--ignored`, with `--view` in a real window. Each run saves the diagram in place, breaks it, deletes it, and replaces it by rename, checking the output against one-off renders at every step. The same live process is then driven through every edge-case picture. The window tests also slice and raster those pictures the way the viewer draws them. CI runs all of these on macOS, Windows, and Linux, where the window runs under Xvfb. SVG snapshots only change on explicit request:
+`tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test --test render snapshots
 ```
 
-Optional browser QA uses Playwright installed separately from the Rust project:
+Browser QA is optional and uses a Playwright install that is not part of the Rust build:
 
 ```sh
 node scripts/visual-check.cjs /tmp/tgw-visual
 ```
 
-Set `PLAYWRIGHT_MODULE` to a local Playwright package and `BROWSER_EXECUTABLE` to a Chromium browser if they are outside the defaults. The script verifies SVG references and layout, then saves screenshots at 1× and 2× resolution.
+Set `PLAYWRIGHT_MODULE` and `BROWSER_EXECUTABLE` when they are not on the default paths. The script checks SVG references and text bounds, then saves 1× and 2× screenshots.
 
 ## License
 
