@@ -1453,8 +1453,14 @@ fn retain_whole_labels(
 }
 
 fn tag_name_is(tag: &str, name: &str) -> bool {
-    let rest = tag.strip_prefix('<').unwrap_or(tag);
-    let rest = rest.strip_prefix('/').unwrap_or(rest);
+    // A closing tag shares the name but must be copied through unchanged.
+    // Rewriting `</svg>` produced `</svg width=...>` and the picture failed to parse.
+    let Some(rest) = tag.strip_prefix('<') else {
+        return false;
+    };
+    if rest.starts_with('/') {
+        return false;
+    }
     rest.starts_with(name)
         && rest
             .as_bytes()
@@ -1958,6 +1964,8 @@ mod tests {
         assert!(head.contains("height=\"20.000\""));
         assert!(head.contains("viewBox=\"10.000 2.000 30.000 20.000\""));
         assert!(sliced.contains("<rect width=\"100\" height=\"40\""));
+        assert!(sliced.ends_with("</svg>"));
+        assert!(!sliced.contains("</svg "));
         assert!(layout_diagram(&full_frame(10.0, 10.0, 2.0), 0.0, 100.0, 0.0, 0.0).is_none());
     }
 
@@ -2029,5 +2037,31 @@ mod tests {
             .filter(|pixel| pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)
             .count();
         assert!(ink > 50, "ink pixels {ink}");
+
+        let frame = diagram_frame(&svg).unwrap();
+        let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+        for slice in [layout.label, layout.wave] {
+            let sliced = slice_svg(&svg, slice.x, slice.y, slice.w, slice.h).unwrap();
+            assert!(
+                sliced.ends_with("</svg>"),
+                "closing tag must stay a closing tag"
+            );
+            let parsed = renderer.parse_svg(sliced.as_bytes()).unwrap();
+            let image = renderer
+                .render_parsed(
+                    &parsed,
+                    SvgSize::Size(size(DevicePixels(480), DevicePixels(1))),
+                )
+                .unwrap();
+            let ink = image
+                .as_bytes(0)
+                .unwrap()
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|pixel| pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)
+                .count();
+            assert!(ink > 20, "slice ink {ink}");
+        }
     }
 }
