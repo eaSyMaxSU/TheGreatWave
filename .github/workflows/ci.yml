@@ -3,10 +3,21 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
   RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   test:
@@ -16,35 +27,77 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
-      - name: Install window system libraries
+
+      # Installs the version pinned in rust-toolchain.toml, so CI lints with
+      # exactly the compiler used locally.
+      - name: Toolchain
+        run: |
+          rustup toolchain install
+          rustc --version
+          cargo clippy --version
+
+      - name: Window system libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends pkg-config \
             libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
+            libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev \
+            xvfb xauth mesa-vulkan-drivers libegl1 libgl1-mesa-dri
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Every check below runs even if an earlier one failed, so one run
+      # reports all problems.
       - name: Format
         run: cargo fmt --check
-      - name: Renderer (no dependencies)
-        run: cargo test --no-default-features
-      - name: Headless watcher
-        run: cargo test --no-default-features --features watch
-      - name: Viewer
-        run: cargo test
+
       - name: Clippy
+        if: ${{ !cancelled() }}
         run: |
-          cargo clippy --all-targets -- -D warnings
-          cargo clippy --all-targets --no-default-features --features watch -- -D warnings
-          cargo clippy --all-targets --no-default-features -- -D warnings
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo clippy --locked --all-targets --no-default-features --features watch -- -D warnings
+          cargo clippy --locked --all-targets --no-default-features -- -D warnings
+
+      - name: Renderer (no dependencies)
+        if: ${{ !cancelled() }}
+        run: |
+          cargo test --locked --no-default-features
+          cargo test --locked --no-default-features --release
+
+      - name: Headless watcher
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-default-features --features watch
+
+      - name: Viewer
+        if: ${{ !cancelled() }}
+        run: cargo test --locked
+
+      - name: Live window follows saves
+        if: ${{ !cancelled() }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            xvfb-run -a -s "-screen 0 1280x1024x24" cargo test --locked --test watch -- --ignored
+          else
+            cargo test --locked --test watch -- --ignored
+          fi
+
+      - name: Docs
+        if: ${{ !cancelled() }}
+        run: cargo doc --locked --no-deps
+
       - name: Release binary
-        run: cargo build --release
+        if: ${{ !cancelled() }}
+        run: cargo build --locked --release
+
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: tgw-${{ runner.os }}
           path: |

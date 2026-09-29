@@ -12,7 +12,7 @@ use gpui_kit::{
     Styled, SvgSize, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::live::{self, lock, Fresh, Gate, Job, Loaded, SourceStamp, SOURCE_POLL};
+use crate::live::{self, lock, Fresh, Gate, Job, Loaded, SourceStamp, StampPoller, SOURCE_POLL};
 
 gpui_kit::actions!(tgw_view, [Quit]);
 
@@ -136,7 +136,7 @@ fn window_icon(cx: &App) -> Option<Arc<image::RgbaImage>> {
         .render_parsed(&tree, SvgSize::ExactSize(size(side, side)))
         .ok()?;
     let mut pixels = image.as_bytes(0)?.to_vec();
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     image::RgbaImage::from_raw(SIDE, SIDE, pixels).map(Arc::new)
@@ -216,19 +216,19 @@ impl Viewer {
     }
 
     fn observe_source(&mut self, cx: &mut Context<Self>) {
-        let job = Arc::clone(&self.job);
+        let poller = StampPoller::start(self.job.input.clone()).ok();
         cx.spawn(async move |this, cx| {
             let executor = cx.background_executor().clone();
             loop {
                 executor.timer(SOURCE_POLL).await;
-                let stamp = live::source_stamp(&job.input);
+                let stamp = poller.as_ref().and_then(StampPoller::latest);
                 let gone = this
                     .update(cx, |view, cx| {
                         if !view.watching {
                             let _ = view.attach_watch(cx);
                         }
-                        let stale = view.observed != stamp || view.output_fault.is_some();
-                        if stale && !view.loading {
+                        let changed = stamp.is_some_and(|stamp| stamp != view.observed);
+                        if (changed || view.output_fault.is_some()) && !view.loading {
                             view.request_reload(cx);
                         }
                         false
@@ -1998,7 +1998,9 @@ mod tests {
         assert!(rendered.width.0 > 0 && rendered.width.0 <= 8192);
         let bytes = image.as_bytes(0).unwrap();
         let ink = bytes
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .filter(|pixel| pixel[0] < 250 || pixel[1] < 250 || pixel[2] < 250)
             .count();
         assert!(ink > 50, "ink pixels {ink}");

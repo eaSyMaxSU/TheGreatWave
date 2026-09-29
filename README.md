@@ -59,7 +59,7 @@ Signal names stay fixed on the left. Tick numbers, the title, and the waveforms 
 | `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, without GUI libraries |
 | `cargo build --release --no-default-features` | Renderer only, with no dependencies |
 
-`tgw --help` says which modes a build leaves out. The window uses [GPUI](https://www.gpui.rs/), which tracks recent stable Rust; CI builds with the latest stable release. Programs that only render can depend on the library with `default-features = false`.
+`tgw --help` says which modes a build leaves out. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the Rust release that CI uses; rustup installs it on first use, so local builds and lints match CI. Programs that only render can depend on the library with `default-features = false`.
 
 ## Platforms
 
@@ -178,11 +178,12 @@ cargo test
 cargo test --no-default-features
 cargo test --no-default-features --features watch
 cargo test --release
+cargo test --test watch -- --ignored   # opens a window
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 ```
 
-The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`, and must render identically with CRLF line endings. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals. `tests/watch.rs` runs the real binary with `--watch`, saves good and broken diagrams, and checks the output against one-off renders. SVG snapshots only change on explicit request:
+The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`, and must render identically with CRLF line endings. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals. `tests/watch.rs` runs the real binary, with `--watch` and, when run with `--ignored`, with `--view` in a real window. Each run saves the diagram in place, breaks it, deletes it, and replaces it by rename, checking the output against one-off renders at every step. CI runs all of these on macOS, Windows, and Linux, where the window runs under Xvfb. SVG snapshots only change on explicit request:
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test --test render snapshots

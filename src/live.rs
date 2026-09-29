@@ -38,14 +38,26 @@ impl Job {
         format: InputFormat,
         indent: u8,
     ) -> Result<Self, String> {
-        if input.is_dir() {
-            return Err(format!("{}: expected a diagram file", input.display()));
+        match fs::metadata(&input) {
+            Ok(meta) if meta.is_dir() => {
+                return Err(format!("{}: expected a diagram file", input.display()));
+            }
+            Ok(_) => {}
+            Err(error) => return Err(format!("{}: {error}", input.display())),
         }
-        if let Some(output) = output.as_deref().filter(|output| same_file(&input, output)) {
-            return Err(format!(
-                "{}: the output would overwrite the diagram",
-                output.display()
-            ));
+        if let Some(output) = &output {
+            if output.is_dir() {
+                return Err(format!(
+                    "{}: expected a file, not a directory",
+                    output.display()
+                ));
+            }
+            if same_file(&input, output) {
+                return Err(format!(
+                    "{}: the output would overwrite the diagram",
+                    output.display()
+                ));
+            }
         }
         Ok(Self {
             label: input.display().to_string(),
@@ -548,6 +560,37 @@ fn file_is_settled(path: &Path) -> bool {
         .is_some_and(|age| age >= READ_SETTLE)
 }
 
+/// Stats the source every [`SOURCE_POLL`] on its own thread, so a stalled
+/// drive delays the answer instead of blocking the caller. The thread ends
+/// once the poller is dropped.
+#[cfg(feature = "view")]
+pub(crate) struct StampPoller(Arc<Mutex<Option<Option<SourceStamp>>>>);
+
+#[cfg(feature = "view")]
+impl StampPoller {
+    pub(crate) fn start(path: PathBuf) -> io::Result<Self> {
+        let latest = Arc::new(Mutex::new(None));
+        let shared = Arc::downgrade(&latest);
+        thread::Builder::new()
+            .name("tgw-poll".into())
+            .spawn(move || loop {
+                let stamp = source_stamp(&path);
+                let Some(latest) = shared.upgrade() else {
+                    break;
+                };
+                *lock(&latest) = Some(stamp);
+                drop(latest);
+                thread::sleep(SOURCE_POLL);
+            })?;
+        Ok(Self(latest))
+    }
+
+    /// The most recent stamp, or `None` before the first poll completes.
+    pub(crate) fn latest(&self) -> Option<Option<SourceStamp>> {
+        *lock(&self.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SourceStamp {
     len: u64,
@@ -750,7 +793,41 @@ mod tests {
         let aliased = dir.join(".").join("a.tgw");
         assert!(Job::new(input.clone(), Some(aliased), InputFormat::Auto, 0).is_err());
         assert!(Job::new(dir.clone(), None, InputFormat::Auto, 0).is_err());
+        assert!(Job::new(input.clone(), Some(dir.clone()), InputFormat::Auto, 0).is_err());
+        assert!(Job::new(dir.join("typo.tgw"), None, InputFormat::Auto, 0).is_err());
         assert!(Job::new(input, Some(dir.join("a.svg")), InputFormat::Auto, 0).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "view")]
+    #[test]
+    fn stamp_poller_reports_changes_and_stops_with_its_owner() {
+        let dir = scratch("poller");
+        let path = dir.join("a.tgw");
+        fs::write(&path, "clk: p\n").unwrap();
+        let poller = StampPoller::start(path.clone()).unwrap();
+        let settle = |expected: Option<SourceStamp>| {
+            let started = Instant::now();
+            while poller.latest() != Some(expected) {
+                assert!(started.elapsed() < Duration::from_secs(10), "{expected:?}");
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
+        settle(source_stamp(&path));
+        fs::write(&path, "clk: p...\n").unwrap();
+        settle(source_stamp(&path));
+        fs::remove_file(&path).unwrap();
+        settle(None);
+        let shared = Arc::downgrade(&poller.0);
+        drop(poller);
+        let started = Instant::now();
+        while shared.strong_count() > 0 {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "poller kept alive"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }

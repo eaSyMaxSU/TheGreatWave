@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             SvgSize::ExactSize(size(DevicePixels(side as i32), DevicePixels(side as i32))),
         )?;
         let mut pixels = image.as_bytes(0).ok_or("empty raster")?.to_vec();
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         Ok(pixels)
