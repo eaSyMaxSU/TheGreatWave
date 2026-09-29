@@ -1237,27 +1237,26 @@ fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>) {
         fit.x1 = fit.x1.max(job.label.x + job.label.w);
         fit.y1 = fit.y1.max(job.label.y + job.label.h);
     }
-    let labels = (job.label.w >= 1.0).then(|| {
-        raster_slice(
-            &job.renderer,
-            &job.svg,
-            job.label,
-            fit,
-            job.scale,
-            job.dpr,
-            job.generation,
-        )
-    });
-    let waves = raster_slice(
-        &job.renderer,
-        &job.svg,
-        job.wave,
-        fit,
-        job.scale,
-        job.dpr,
-        job.generation,
-    );
-    (labels.flatten(), waves)
+    let PaintJob {
+        renderer,
+        svg,
+        label,
+        wave,
+        scale,
+        dpr,
+        generation,
+        ..
+    } = job;
+    std::thread::scope(|scope| {
+        let names = (label.w >= 1.0).then(|| {
+            let renderer = renderer.clone();
+            let svg = Arc::clone(&svg);
+            scope.spawn(move || raster_slice(&renderer, &svg, label, fit, scale, dpr, generation))
+        });
+        let waves = raster_slice(&renderer, &svg, wave, fit, scale, dpr, generation);
+        let names = names.and_then(|job| job.join().ok()).flatten();
+        (names, waves)
+    })
 }
 
 fn raster_slice(
@@ -1328,7 +1327,7 @@ fn slice_svg(svg: &str, x: f32, y: f32, w: f32, h: f32) -> Option<String> {
 fn slice_visible(svg: &str, x: f32, y: f32, w: f32, h: f32, fit: LabelWindow) -> Option<String> {
     let start = svg.find("<svg")?;
     svg[start..].find('>')?;
-    Some(retain_whole_labels(
+    let sliced = retain_whole_labels(
         svg,
         SliceRequest {
             clip: LabelWindow {
@@ -1341,7 +1340,246 @@ fn slice_visible(svg: &str, x: f32, y: f32, w: f32, h: f32, fit: LabelWindow) ->
             root_w: w,
             root_h: h,
         },
+    );
+    // resvg paints a pattern by sampling every pixel. A clock that is one
+    // wide rectangle therefore costs as much as a long filled shape, even
+    // outside the window. Clip those rectangles, then repeat the tile as
+    // ordinary strokes across only what is visible.
+    Some(expand_patterns(&clip_paint_rects(&sliced)))
+}
+
+/// Rectangles that run far past the window are clipped in their own
+/// coordinates. Pattern tiles stay put because their origin is user space.
+fn clip_paint_rects(svg: &str) -> String {
+    let Some((vx, vy, vw, vh)) = root_view_box(svg) else {
+        return svg.to_string();
+    };
+    const SLACK: f64 = 64.0;
+    let left = vx - SLACK;
+    let top = vy - SLACK;
+    let right = vx + vw + SLACK;
+    let bottom = vy + vh + SLACK;
+    let mut out = String::with_capacity(svg.len());
+    let mut stack = vec![(0.0_f64, 0.0_f64, false)];
+    let mut i = 0;
+    while i < svg.len() {
+        if !svg[i..].starts_with('<') {
+            let next = svg[i..].find('<').map_or(svg.len(), |offset| i + offset);
+            out.push_str(&svg[i..next]);
+            i = next;
+            continue;
+        }
+        if svg[i..].starts_with("</g>") {
+            if stack.len() > 1 {
+                stack.pop();
+            }
+            out.push_str("</g>");
+            i += 4;
+            continue;
+        }
+        let Some(end) = svg[i..].find('>').map(|offset| i + offset + 1) else {
+            out.push_str(&svg[i..]);
+            break;
+        };
+        let tag = &svg[i..end];
+        if tag_name_is(tag, "g") {
+            let (tx, ty, complex) = *stack.last().unwrap();
+            let (dx, dy) = translate_of(tag).unwrap_or((0.0, 0.0));
+            let child_complex = complex || tag.contains("scale(") || tag.contains("rotate(");
+            stack.push((tx + f64::from(dx), ty + f64::from(dy), child_complex));
+            out.push_str(tag);
+        } else if tag_name_is(tag, "rect") {
+            let (tx, ty, complex) = *stack.last().unwrap();
+            if let Some(rewritten) = (!complex)
+                .then(|| clip_rect(tag, tx, ty, left, top, right, bottom))
+                .flatten()
+            {
+                out.push_str(&rewritten);
+            } else {
+                out.push_str(tag);
+            }
+        } else {
+            out.push_str(tag);
+        }
+        i = end;
+    }
+    out
+}
+
+fn clip_rect(
+    tag: &str,
+    tx: f64,
+    ty: f64,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+) -> Option<String> {
+    let x = f64::from(attr_f32(tag, "x").unwrap_or(0.0));
+    let y = f64::from(attr_f32(tag, "y").unwrap_or(0.0));
+    let w = f64::from(attr_f32(tag, "width")?);
+    let h = f64::from(attr_f32(tag, "height")?);
+    if w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    let x0 = x + tx;
+    let y0 = y + ty;
+    let x1 = x0 + w;
+    let y1 = y0 + h;
+    if x0 >= left && x1 <= right && y0 >= top && y1 <= bottom {
+        return None;
+    }
+    let nx0 = x0.max(left);
+    let ny0 = y0.max(top);
+    let nx1 = x1.min(right);
+    let ny1 = y1.min(bottom);
+    if nx1 <= nx0 || ny1 <= ny0 {
+        return Some(set_attr(&set_attr(tag, "width", "0"), "height", "0"));
+    }
+    Some(set_attr(
+        &set_attr(
+            &set_attr(
+                &set_attr(tag, "x", &fmt_num((nx0 - tx) as f32)),
+                "y",
+                &fmt_num((ny0 - ty) as f32),
+            ),
+            "width",
+            &fmt_num((nx1 - nx0) as f32),
+        ),
+        "height",
+        &fmt_num((ny1 - ny0) as f32),
     ))
+}
+
+struct PatternTile {
+    x: f64,
+    width: f64,
+    body: String,
+    attrs: String,
+}
+
+/// Repeats a pattern tile as strokes. resvg otherwise samples the tile with
+/// bicubic filtering across every pixel of the rectangle.
+fn expand_patterns(svg: &str) -> String {
+    let mut tiles = std::collections::HashMap::<String, PatternTile>::new();
+    let mut rest = svg;
+    while let Some(start) = rest.find("<pattern ") {
+        let Some(tag_end) = rest[start..].find('>').map(|offset| start + offset + 1) else {
+            break;
+        };
+        let Some(close) = rest[tag_end..]
+            .find("</pattern>")
+            .map(|offset| tag_end + offset)
+        else {
+            break;
+        };
+        let tag = &rest[start..tag_end];
+        if let Some(id) = attr(tag, "id") {
+            let width = f64::from(attr_f32(tag, "width").unwrap_or(0.0));
+            if width > 0.0 {
+                tiles.insert(
+                    id.to_string(),
+                    PatternTile {
+                        x: f64::from(attr_f32(tag, "x").unwrap_or(0.0)),
+                        width,
+                        body: rest[tag_end..close].to_string(),
+                        attrs: pattern_attrs(tag),
+                    },
+                );
+            }
+        }
+        rest = &rest[close + "</pattern>".len()..];
+    }
+    if tiles.is_empty() {
+        return svg.to_string();
+    }
+    let mut out = String::with_capacity(svg.len());
+    let mut i = 0;
+    while i < svg.len() {
+        if !svg[i..].starts_with("<rect ") {
+            let next = svg[i..]
+                .find("<rect ")
+                .map_or(svg.len(), |offset| i + offset);
+            out.push_str(&svg[i..next]);
+            i = next;
+            continue;
+        }
+        let Some(end) = svg[i..].find('>').map(|offset| i + offset + 1) else {
+            out.push_str(&svg[i..]);
+            break;
+        };
+        let tag = &svg[i..end];
+        if let Some(drawn) = tiled_rect(tag, &tiles) {
+            out.push_str(&drawn);
+        } else {
+            out.push_str(tag);
+        }
+        i = end;
+    }
+    out
+}
+
+fn pattern_attrs(tag: &str) -> String {
+    let mut attrs = String::new();
+    for name in [
+        "fill",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+    ] {
+        if let Some(value) = attr(tag, name) {
+            attrs.push(' ');
+            attrs.push_str(name);
+            attrs.push_str("=\"");
+            attrs.push_str(value);
+            attrs.push('"');
+        }
+    }
+    attrs
+}
+
+fn tiled_rect(tag: &str, tiles: &std::collections::HashMap<String, PatternTile>) -> Option<String> {
+    let fill = attr(tag, "fill")?;
+    let id = fill.strip_prefix("url(#")?.strip_suffix(')')?;
+    let tile = tiles.get(id)?;
+    let x = f64::from(attr_f32(tag, "x").unwrap_or(0.0));
+    let width = f64::from(attr_f32(tag, "width")?);
+    if width <= 0.0 || tile.width <= 0.0 {
+        return None;
+    }
+    let first = ((x - tile.x) / tile.width).floor() as i64;
+    let last = ((x + width - tile.x) / tile.width).ceil() as i64;
+    let count = last.saturating_sub(first);
+    if !(1..=512_i64).contains(&count) {
+        return None;
+    }
+    let mut out = format!("<g{}>", tile.attrs);
+    for step in first..last {
+        let shift = step as f64 * tile.width;
+        if (tile.x + shift + tile.width) < x || (tile.x + shift) > x + width {
+            continue;
+        }
+        out.push_str("<g transform=\"translate(");
+        out.push_str(&fmt_num(shift as f32));
+        out.push_str(")\">");
+        out.push_str(&tile.body);
+        out.push_str("</g>");
+    }
+    out.push_str("</g>");
+    Some(out)
+}
+
+fn root_view_box(svg: &str) -> Option<(f64, f64, f64, f64)> {
+    let tag_end = svg.find('>')?;
+    let tag = &svg[..=tag_end];
+    let value = attr(tag, "viewBox")?;
+    let mut parts = value.split_whitespace();
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    let w = parts.next()?.parse().ok()?;
+    let h = parts.next()?.parse().ok()?;
+    Some((x, y, w, h))
 }
 
 fn root_tag(tag: &str, x: f32, y: f32, w: f32, h: f32) -> String {
@@ -1368,12 +1606,20 @@ fn set_attr(tag: &str, name: &str, value: &str) -> String {
         out.push_str(&tag[value_end..]);
         out
     } else {
-        let mut out = tag.trim_end_matches('>').to_string();
+        let self_closing = tag.ends_with("/>");
+        let mut out = if self_closing {
+            tag.trim_end_matches('>')
+                .trim_end_matches('/')
+                .trim_end()
+                .to_string()
+        } else {
+            tag.trim_end_matches('>').to_string()
+        };
         out.push(' ');
         out.push_str(name);
         out.push_str("=\"");
         out.push_str(value);
-        out.push_str("\">");
+        out.push_str(if self_closing { "\"/>" } else { "\">" });
         out
     }
 }
@@ -2120,6 +2366,35 @@ mod tests {
                 .count();
             assert!(ink > 20, "slice ink {ink}");
         }
+    }
+
+    #[test]
+    fn a_long_clock_slice_repeats_tiles_instead_of_one_huge_rectangle() {
+        let long = tgw::render(&format!("clk: p{}", ".".repeat(4000))).unwrap();
+        let frame = diagram_frame(&long).unwrap();
+        let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+        let sliced = slice_svg(
+            &long,
+            layout.wave.x,
+            layout.wave.y,
+            layout.wave.w,
+            layout.wave.h,
+        )
+        .unwrap();
+        let mut rest = sliced.as_str();
+        let mut widest = 0.0_f32;
+        while let Some(index) = rest.find("width=\"") {
+            rest = &rest[index + 7..];
+            let width = rest.split('"').next().unwrap_or("0").parse().unwrap_or(0.0);
+            widest = widest.max(width);
+        }
+        assert!(
+            widest < layout.wave.w + 200.0,
+            "widest rect {widest} is larger than the window"
+        );
+        assert!(sliced.contains("M-4 20"), "the clock tile is still drawn");
+        let renderer = SvgRenderer::new(Arc::new(()));
+        renderer.parse_svg(sliced.as_bytes()).unwrap();
     }
 
     #[test]

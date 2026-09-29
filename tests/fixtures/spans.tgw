@@ -7,6 +7,6 @@ early: n.... ; phase=-1.5
 late: P.... ; phase=0.75
 held: 1
 minclk: p.
-marks: 0101010 ; node=.a.B.c.D ; over=1..0.. ; under=.2..0.
+marks: 0101010 ; node=.a.B.c. ; over=1..0.. ; under=.2..0.
 
 @edge a->c pulse

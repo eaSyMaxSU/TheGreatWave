@@ -123,6 +123,10 @@ fn edge_case_pictures_keep_their_marks() {
     let spans = render_fixture("spans");
     assert!(spans.contains(">pulse<"));
     assert!(spans.contains("arrowhead"));
+    // period=2 makes each symbol two cycles; phase=-1.5 delays by 60px and
+    // phase=0.75 advances by 30px.
+    assert!(spans.contains("translate(60)"));
+    assert!(spans.contains("translate(-30)") || spans.contains("translate(-10)"));
     assert!(dimension(&spans, "width") > dimension(&render_fixture("crop"), "width"));
 
     let markup = render_fixture("markup");
