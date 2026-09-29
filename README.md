@@ -27,6 +27,8 @@ cargo build --release
 
 `-i/--input` also selects an input file; `-o/--output` writes a file. Omit the input, or use `-`, to read stdin. `--indent 2` formats the SVG. `tgw --help` documents every option, live mode, and the window controls. Errors include the source line and column.
 
+Rendering will not write the SVG over the diagram. The same path, a symlink, and a hard link are all refused. On Windows, another case of the same name is the same file.
+
 Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automatically, or selected with `--format tgw|json5|auto`. Convert old diagrams once:
 
 ```sh
@@ -45,9 +47,9 @@ Existing WaveJSON/JSON5 files remain supported. Input syntax is detected automat
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only, e.g. over SSH
 ```
 
-Live mode needs an input file rather than stdin, and `--watch` also needs `-o`. The output holds exactly the bytes a one-off `tgw INPUT -o OUTPUT` writes with the same `--indent` and `--format`. It is replaced in one step, so a reader never sees half a file, and it is left alone when a save changes nothing. Editors that save through a temporary file and rename it are followed. The input is also checked five times a second, so a save is not missed where file events are unreliable, such as on network drives.
+Live mode needs an input file, not stdin, and `--watch` also needs `-o`. It cannot be combined with `--convert`. A directory is rejected as either the diagram or the output, and the output's parent directory must already exist. The output holds the same bytes a one-off `tgw INPUT -o OUTPUT` writes with the same `--indent` and `--format`, and it is left alone when a save changes nothing. A new picture is published by renaming a temporary file into place. If that rename is refused, as when Windows holds the file open, the picture is written in place instead. Editors that save through a temporary file and rename it are followed. The input is also checked five times a second, so a save is not missed where file events are unreliable, such as on network drives. On Windows those checks compare paths without regard to case, and they use the file index so a replaced file is noticed even when the size and timestamp stay the same.
 
-A syntax error or a missing file keeps the last good picture and output, and reports `path:line:col: message` until the next good save: in the window's status bar, or on stderr for `--watch`. Ctrl-W or Ctrl-Q closes the window (Command-W or Command-Q on macOS); `--watch` stops with Ctrl-C.
+A syntax error, a missing file, or an output that cannot be written keeps the last good picture and output. The problem is reported as `path:line:col: message` for a diagram error, or as the operating-system error for a write, until the next good save: in the window's status bar, or on stderr for `--watch`. A failed write is retried at the poll interval, not in a tight loop. Ctrl-W or Ctrl-Q closes the window (Command-W or Command-Q on macOS); `--watch` stops with Ctrl-C.
 
 Signal names stay fixed on the left. Tick numbers, the title, and the waveforms scroll together. Drag a scrollbar, click its track, or use the trackpad; hold Shift to move a vertical scroll sideways. A diagram wider than the window scrolls horizontally, and a taller one scrolls vertically. A tick label that would be cut by the edge is omitted until it fits. The picture keeps a small, equal padding on every edge. A short diagram opens in a window snug to the drawing. Resizing the window keeps that size and uses the extra room as padding. The horizontal scrollbar appears when the waveform is wider than the window; a taller diagram scrolls vertically. A diagram that fits, including a short clock, is enlarged and stays fully visible. `@bounds` still limits the time range that is drawn.
 
@@ -66,7 +68,7 @@ Signal names stay fixed on the left. Tick numbers, the title, and the waveforms 
 CI builds and tests macOS, Windows, and Linux on every push.
 
 - **macOS**: the Dock shows the tgw icon while a window is open.
-- **Windows**: the icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the resource compiler from the Visual Studio Build Tools, or `windres` for the GNU toolchain; without one the build prints a warning and continues without the icon. Files saved with CRLF line endings render exactly like LF.
+- **Windows**: the icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the resource compiler from the Visual Studio Build Tools, or `windres` for the GNU toolchain; without one the build prints a warning and continues without the icon. Files saved with CRLF line endings render exactly like LF. Sharing and lock violations while an editor is still writing are treated as transient, and the next poll reads the finished file.
 - **Linux**: the window runs on Wayland or X11. Without `WAYLAND_DISPLAY` or `DISPLAY`, `--view` exits with a message, and `--watch` still works. Building the window needs the xkbcommon, xcb, Wayland, and fontconfig development packages; on Debian or Ubuntu:
 
 ```sh
@@ -174,14 +176,20 @@ let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 ## Checks
 
 ```sh
-cargo test
-cargo test --no-default-features
-cargo test --no-default-features --features watch
-cargo test --release
-cargo test --test watch -- --ignored   # opens a window
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --no-default-features --features watch -- -D warnings
+cargo clippy --locked --all-targets --no-default-features -- -D warnings
+cargo test --locked
+cargo test --locked --no-default-features
+cargo test --locked --no-default-features --features watch
+cargo test --locked --no-default-features --release
+cargo test --locked --test watch -- --ignored   # opens a window
+cargo doc --locked --no-deps
+cargo build --locked --release
 ```
+
+Clippy and the tests cover three builds: the default, with the renderer, `--watch`, and `--view`; the headless watcher; and the renderer alone. The renderer is also tested in release. CI runs this set on macOS, Windows, and Linux, with `--locked` so the build matches `Cargo.lock`. `RUSTFLAGS=-D warnings` is set in CI.
 
 The native fixtures in `tests/fixtures` are compared with their legacy JSON5 sources in `tests/fixtures/legacy`, and must render identically with CRLF line endings. Regression tests cover geometry, cropping, Unicode, malformed inputs, conversion, and compact long signals. `tests/watch.rs` runs the real binary, with `--watch` and, when run with `--ignored`, with `--view` in a real window. Each run saves the diagram in place, breaks it, deletes it, and replaces it by rename, checking the output against one-off renders at every step. CI runs all of these on macOS, Windows, and Linux, where the window runs under Xvfb. SVG snapshots only change on explicit request:
 
