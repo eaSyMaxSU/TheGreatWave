@@ -8,8 +8,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tgw::InputFormat;
 
+#[cfg(feature = "view")]
+mod layout;
 #[cfg(feature = "watch")]
 mod live;
+#[cfg(feature = "view")]
+mod slice;
 #[cfg(feature = "view")]
 mod view;
 
@@ -46,8 +50,10 @@ Live mode:
 
   In the window, signal names stay fixed while the waveforms scroll: use the
   wheel or trackpad, hold Shift to scroll sideways, or drag a scrollbar.
-  Ctrl-W or Ctrl-Q closes it (Cmd-W or Cmd-Q on macOS). --watch runs until
-  Ctrl-C.
+  The window follows the system appearance. Ctrl-Shift-L switches between
+  the default light and default dark colors (Command-Shift-L on macOS) and
+  keeps that choice. Ctrl-W or Ctrl-Q closes it (Cmd-W or Cmd-Q on macOS).
+  --watch runs until Ctrl-C.
 
 Examples:
   tgw diagram.tgw -o diagram.svg

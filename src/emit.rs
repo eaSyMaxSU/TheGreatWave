@@ -2,6 +2,7 @@
 
 use crate::geom::{self, Paint};
 use crate::scan::{Body, Cap, Doc, Tick};
+use crate::scheme::Scheme;
 use crate::w::{prettify, push_esc, push_f64, push_i64};
 use crate::wave;
 use crate::width::text_width;
@@ -14,6 +15,15 @@ struct Ev {
 }
 
 pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Error> {
+    write_themed(doc, out, indent, &crate::scheme::LIGHT)
+}
+
+pub(crate) fn write_themed(
+    doc: &Doc,
+    out: &mut Vec<u8>,
+    indent: u8,
+    scheme: &'static Scheme,
+) -> Result<(), Error> {
     let n = doc.lanes.len() as i64;
     let mut waves = Vec::with_capacity(doc.lanes.len());
     let mut node_origins = Vec::with_capacity(doc.lanes.len());
@@ -106,7 +116,7 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
     let yhead = 12 + yh0 + yh1;
     let height = (gy + yhead + yf0 + yf1 + 12).max(24);
 
-    let mut paint = Paint::new();
+    let mut paint = Paint::with(scheme);
     let mut events = Vec::new();
     let grid = if doc.marks && gy > 0 {
         grid_geom(doc.hscale, xmax, gy)
@@ -121,9 +131,13 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
         push_i64(&mut paint.body, TGO);
         paint.body.extend_from_slice(b"\" y=\"");
         push_i64(&mut paint.body, YM);
-        paint.body.extend_from_slice(
-            b"\" text-anchor=\"end\" fill=\"#334155\" font-weight=\"500\" xml:space=\"preserve\">",
-        );
+        paint
+            .body
+            .extend_from_slice(b"\" text-anchor=\"end\" fill=\"");
+        paint.body.extend_from_slice(scheme.label.as_bytes());
+        paint
+            .body
+            .extend_from_slice(b"\" font-weight=\"500\" xml:space=\"preserve\">");
         push_esc(&mut paint.body, &lane.name);
         paint.body.extend_from_slice(b"</text><g clip-path=\"url(#");
         paint
@@ -190,7 +204,9 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
             push_f64(&mut paint.body, sy);
             paint
                 .body
-                .extend_from_slice(b")\"><path fill=\"none\" stroke=\"#000\" stroke-width=\"");
+                .extend_from_slice(b")\"><path fill=\"none\" stroke=\"");
+            paint.body.extend_from_slice(scheme.ink.as_bytes());
+            paint.body.extend_from_slice(b"\" stroke-width=\"");
             push_f64(&mut paint.body, stroke);
             paint.body.extend_from_slice(b"\" d=\"");
             push_esc(&mut paint.body, d);
@@ -204,6 +220,7 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
                 lane.period * doc.hscale as f64,
                 lane.phase + doc.xmin as f64 / 2.0,
                 plot_width,
+                scheme,
             );
         }
         if let Some(s) = &lane.under {
@@ -214,12 +231,13 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
                 lane.period * doc.hscale as f64,
                 lane.phase + doc.xmin as f64 / 2.0,
                 plot_width,
+                scheme,
             );
         }
         if let Some(w) = &waves[idx] {
             for gx in &w.gaps {
                 if *gx >= 0.0 && *gx <= plot_width {
-                    draw_gap(&mut paint.body, *gx);
+                    draw_gap(&mut paint.body, *gx, scheme);
                 }
             }
         }
@@ -250,13 +268,39 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
     paint
         .body
         .extend_from_slice(b"<g clip-path=\"url(#plot-clip)\">");
-    write_arcs(&mut paint.body, doc, &events, plot_width);
+    write_arcs(&mut paint.body, doc, &events, plot_width, scheme);
     if let Some(g) = &doc.gaps {
-        draw_gap_string(&mut paint.body, g, n, doc.hscale, doc.xmin, plot_width);
+        draw_gap_string(
+            &mut paint.body,
+            g,
+            n,
+            doc.hscale,
+            doc.xmin,
+            plot_width,
+            scheme,
+        );
     }
     paint.body.extend_from_slice(b"</g>");
-    write_caption(&mut paint.body, &doc.head, true, xmax, gy, yh0, doc.hscale);
-    write_caption(&mut paint.body, &doc.foot, false, xmax, gy, yf0, doc.hscale);
+    write_caption(
+        &mut paint.body,
+        &doc.head,
+        true,
+        xmax,
+        gy,
+        yh0,
+        doc.hscale,
+        scheme,
+    );
+    write_caption(
+        &mut paint.body,
+        &doc.foot,
+        false,
+        xmax,
+        gy,
+        yf0,
+        doc.hscale,
+        scheme,
+    );
 
     out.extend_from_slice(b"<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"tgw\" role=\"img\" aria-labelledby=\"diagram-title\" width=\"");
     push_f64(out, width);
@@ -266,7 +310,9 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
     push_f64(out, width);
     out.push(b' ');
     push_i64(out, height);
-    out.extend_from_slice(b"\" overflow=\"hidden\" font-family=\"Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif\" font-size=\"12\" fill=\"#0f172a\" stroke-linejoin=\"round\"><title id=\"diagram-title\">");
+    out.extend_from_slice(b"\" overflow=\"hidden\" font-family=\"Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif\" font-size=\"12\" fill=\"");
+    out.extend_from_slice(scheme.text.as_bytes());
+    out.extend_from_slice(b"\" stroke-linejoin=\"round\"><title id=\"diagram-title\">");
     if let Some(title) = &doc.head.text {
         push_esc(out, title);
     } else {
@@ -283,13 +329,21 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
     }
     out.extend_from_slice(b"</desc><defs>");
     if !doc.edges.is_empty() {
-        write_markers(out);
+        write_markers(out, scheme);
     }
     if paint.hatch {
-        out.extend_from_slice(b"<pattern id=\"xh\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\"><rect width=\"6\" height=\"6\" fill=\"#f1f5f9\"/><path d=\"M-1,1 L1,-1 M0,6 L6,0 M5,7 L7,5\" fill=\"none\" stroke=\"#94a3b8\" stroke-width=\"0.7\"/></pattern>");
+        out.extend_from_slice(
+            b"<pattern id=\"xh\" width=\"6\" height=\"6\" patternUnits=\"userSpaceOnUse\"><rect width=\"6\" height=\"6\" fill=\"",
+        );
+        out.extend_from_slice(scheme.hatch_fill.as_bytes());
+        out.extend_from_slice(
+            b"\"/><path d=\"M-1,1 L1,-1 M0,6 L6,0 M5,7 L7,5\" fill=\"none\" stroke=\"",
+        );
+        out.extend_from_slice(scheme.hatch_line.as_bytes());
+        out.extend_from_slice(b"\" stroke-width=\"0.7\"/></pattern>");
     }
     for (i, key) in paint.clocks.iter().enumerate() {
-        geom::write_clock_pattern(out, i, key);
+        geom::write_clock_pattern(out, i, key, scheme.ink);
     }
     clip_rect(
         out,
@@ -323,13 +377,17 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
         push_i64(out, g.height);
         out.extend_from_slice(b"\" patternUnits=\"userSpaceOnUse\"><path d=\"M0.5,0 V");
         push_i64(out, g.height);
-        out.extend_from_slice(b"\" fill=\"none\" stroke=\"#cbd5e1\" stroke-width=\"1\" stroke-dasharray=\"2,4\"/></pattern>");
+        out.extend_from_slice(b"\" fill=\"none\" stroke=\"");
+        out.extend_from_slice(scheme.grid.as_bytes());
+        out.extend_from_slice(b"\" stroke-width=\"1\" stroke-dasharray=\"2,4\"/></pattern>");
     }
     out.extend_from_slice(b"</defs><rect width=\"");
     push_f64(out, width);
     out.extend_from_slice(b"\" height=\"");
     push_i64(out, height);
-    out.extend_from_slice(b"\" fill=\"#fff\"/><g transform=\"translate(");
+    out.extend_from_slice(b"\" fill=\"");
+    out.extend_from_slice(scheme.paper.as_bytes());
+    out.extend_from_slice(b"\"/><g transform=\"translate(");
     push_f64(out, xg + 0.5);
     out.push(b',');
     push_f64(out, yhead as f64 + 0.5);
@@ -343,7 +401,7 @@ pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Erro
     }
     out.extend_from_slice(&paint.body);
     out.extend_from_slice(b"</g>");
-    write_groups(out, doc, yhead);
+    write_groups(out, doc, yhead, scheme);
     out.extend_from_slice(b"</svg>");
     scope_ids(out);
     if indent > 0 {
@@ -454,21 +512,47 @@ fn grid_geom(hscale: i32, xmax: f64, gy: i64) -> Option<Grid> {
     })
 }
 
-fn write_markers(body: &mut Vec<u8>) {
+fn write_markers(body: &mut Vec<u8>, scheme: &Scheme) {
     body.extend_from_slice(
-        b"<marker id=\"arrowhead\" viewBox=\"0 -4 11 8\" refX=\"11\" refY=\"0\" markerWidth=\"8\" markerHeight=\"6\" orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,-4 L11,0 L0,4 Z\" fill=\"#0041c4\"/></marker><marker id=\"arrowtail\" viewBox=\"-11 -4 11 8\" refX=\"-11\" refY=\"0\" markerWidth=\"8\" markerHeight=\"6\" orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,-4 L-11,0 L0,4 Z\" fill=\"#0041c4\"/></marker><marker id=\"tee\" viewBox=\"0 0 2 6\" refX=\"1\" refY=\"3\" markerWidth=\"2\" markerHeight=\"6\" orient=\"auto\"><path d=\"M1,0 L1,6\" stroke=\"#0041c4\" stroke-width=\"2\"/></marker>",
+        b"<marker id=\"arrowhead\" viewBox=\"0 -4 11 8\" refX=\"11\" refY=\"0\" markerWidth=\"8\" markerHeight=\"6\" orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,-4 L11,0 L0,4 Z\" fill=\"",
     );
+    body.extend_from_slice(scheme.bracket.as_bytes());
+    body.extend_from_slice(
+        b"\"/></marker><marker id=\"arrowtail\" viewBox=\"-11 -4 11 8\" refX=\"-11\" refY=\"0\" markerWidth=\"8\" markerHeight=\"6\" orient=\"auto\" markerUnits=\"strokeWidth\"><path d=\"M0,-4 L-11,0 L0,4 Z\" fill=\"",
+    );
+    body.extend_from_slice(scheme.bracket.as_bytes());
+    body.extend_from_slice(
+        b"\"/></marker><marker id=\"tee\" viewBox=\"0 0 2 6\" refX=\"1\" refY=\"3\" markerWidth=\"2\" markerHeight=\"6\" orient=\"auto\"><path d=\"M1,0 L1,6\" stroke=\"",
+    );
+    body.extend_from_slice(scheme.bracket.as_bytes());
+    body.extend_from_slice(b"\" stroke-width=\"2\"/></marker>");
 }
 
-fn draw_gap(body: &mut Vec<u8>, x: f64) {
+fn draw_gap(body: &mut Vec<u8>, x: f64, scheme: &Scheme) {
     body.extend_from_slice(b"<g transform=\"translate(");
     push_f64(body, x);
+    body.extend_from_slice(b")\"><path d=\"M-5,22 C0,22 0,-2 5,-2\" fill=\"none\" stroke=\"");
+    body.extend_from_slice(scheme.paper.as_bytes());
     body.extend_from_slice(
-        b")\"><path d=\"M-5,22 C0,22 0,-2 5,-2\" fill=\"none\" stroke=\"#fff\" stroke-width=\"6\"/><path d=\"M-7,22 C-2,22 -2,-2 3,-2\" fill=\"none\" stroke=\"#000\" stroke-width=\"1\"/><path d=\"M-3,22 C2,22 2,-2 7,-2\" fill=\"none\" stroke=\"#000\" stroke-width=\"1\"/></g>",
+        b"\" stroke-width=\"6\"/><path d=\"M-7,22 C-2,22 -2,-2 3,-2\" fill=\"none\" stroke=\"",
     );
+    body.extend_from_slice(scheme.ink.as_bytes());
+    body.extend_from_slice(
+        b"\" stroke-width=\"1\"/><path d=\"M-3,22 C2,22 2,-2 7,-2\" fill=\"none\" stroke=\"",
+    );
+    body.extend_from_slice(scheme.ink.as_bytes());
+    body.extend_from_slice(b"\" stroke-width=\"1\"/></g>");
 }
 
-fn draw_ou(body: &mut Vec<u8>, text: &str, under: bool, period: f64, phase: f64, width: f64) {
+fn draw_ou(
+    body: &mut Vec<u8>,
+    text: &str,
+    under: bool,
+    period: f64,
+    phase: f64,
+    width: f64,
+    scheme: &Scheme,
+) {
     if text.is_empty() || width <= 0.0 {
         return;
     }
@@ -478,7 +562,7 @@ fn draw_ou(body: &mut Vec<u8>, text: &str, under: bool, period: f64, phase: f64,
     push_i64(body, if under { YS } else { 0 });
     body.extend_from_slice(b")\" fill=\"none\" stroke-width=\"3\">");
     let mut start = None;
-    let mut color = "#000000";
+    let mut color = scheme.ink_full;
     for (i, &symbol) in text.as_bytes().iter().enumerate() {
         let x = i as f64 * step + xoff;
         if x > width + 7.0 {
@@ -493,7 +577,7 @@ fn draw_ou(body: &mut Vec<u8>, text: &str, under: bool, period: f64, phase: f64,
             }
             if symbol != b'0' {
                 start = Some(x + 12.0);
-                color = ou_color(symbol);
+                color = scheme.mark(symbol);
             }
         }
     }
@@ -531,20 +615,7 @@ fn ou_span(body: &mut Vec<u8>, start: f64, end: f64, color: &str, arrow: bool, w
     }
 }
 
-fn ou_color(c: u8) -> &'static str {
-    match c {
-        b'2' => "#e90000",
-        b'3' => "#3edd00",
-        b'4' => "#0074cd",
-        b'5' => "#ff15db",
-        b'6' => "#af9800",
-        b'7' => "#00864f",
-        b'8' => "#a076ff",
-        _ => "#000000",
-    }
-}
-
-fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64) {
+fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64, scheme: &Scheme) {
     let mut lookup = std::collections::HashMap::with_capacity(events.len());
     for ev in events {
         lookup.entry(ev.ch).or_insert(ev);
@@ -563,7 +634,7 @@ fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64) {
         if a.x.max(b.x) < 0.0 || a.x.min(b.x) > width {
             continue;
         }
-        let (d, style, lx, ly) = arc_shape(&shape, a.x, a.y, b.x, b.y, !text.is_empty());
+        let (d, style, lx, ly) = arc_shape(&shape, a.x, a.y, b.x, b.y, !text.is_empty(), scheme);
         body.extend_from_slice(b"<path d=\"");
         body.extend_from_slice(d.as_bytes());
         body.extend_from_slice(b"\" style=\"");
@@ -575,7 +646,7 @@ fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64) {
     }
     for ev in events {
         if !ev.ch.is_uppercase() && ev.x >= 0.0 && ev.x <= width {
-            label(body, ev.x, ev.y, &ev.ch.to_string(), doc.arc_font);
+            label(body, ev.x, ev.y, &ev.ch.to_string(), doc.arc_font, scheme);
         }
     }
     for (x, y, text) in labels {
@@ -586,6 +657,7 @@ fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64) {
             y,
             &text,
             doc.arc_font,
+            scheme,
         );
     }
 }
@@ -613,15 +685,22 @@ fn arc_shape(
     x2: f64,
     y2: f64,
     labeled: bool,
+    scheme: &Scheme,
 ) -> (String, String, f64, f64) {
     let dx = x2 - x1;
     let dy = y2 - y1;
     let mut lx = (x1 + x2) / 2.0;
     let ly = (y1 + y2) / 2.0;
     let straight = line(x1, y1, x2, y2);
-    let blue = "fill:none;stroke:#0041c4;stroke-width:1";
-    let arrow = "marker-end:url(#arrowhead);stroke:#0041c4;stroke-width:1;fill:none";
-    let both = "marker-end:url(#arrowhead);marker-start:url(#arrowtail);stroke:#0041c4;stroke-width:1;fill:none";
+    let blue = format!("fill:none;stroke:{};stroke-width:1", scheme.bracket);
+    let arrow = format!(
+        "marker-end:url(#arrowhead);stroke:{};stroke-width:1;fill:none",
+        scheme.bracket
+    );
+    let both = format!(
+        "marker-end:url(#arrowhead);marker-start:url(#arrowtail);stroke:{};stroke-width:1;fill:none",
+        scheme.bracket
+    );
     let (d, style) = match shape {
         "" | "-" => (straight, blue.to_string()),
         "~" => (
@@ -733,10 +812,15 @@ fn arc_shape(
         "<-|->" => (elbow(x1, y1, dx, dy), both.to_string()),
         "+" => (
             straight,
-            "marker-end:url(#tee);marker-start:url(#tee);fill:none;stroke:#0041c4;stroke-width:1"
-                .to_string(),
+            format!(
+                "marker-end:url(#tee);marker-start:url(#tee);fill:none;stroke:{};stroke-width:1",
+                scheme.bracket
+            ),
         ),
-        _ => (straight, "fill:none;stroke:#F00;stroke-width:1".to_string()),
+        _ => (
+            straight,
+            format!("fill:none;stroke:{};stroke-width:1", scheme.fault),
+        ),
     };
     (d, style, lx, ly)
 }
@@ -810,7 +894,7 @@ fn elbow(x: f64, y: f64, dx: f64, dy: f64) -> String {
     s
 }
 
-fn label(body: &mut Vec<u8>, x: f64, y: f64, text: &str, font: f64) {
+fn label(body: &mut Vec<u8>, x: f64, y: f64, text: &str, font: f64, scheme: &Scheme) {
     let font = if font > 0.0 { font } else { 11.0 };
     let w = text_width(text, font) + 6.0;
     body.extend_from_slice(b"<g transform=\"translate(");
@@ -825,7 +909,9 @@ fn label(body: &mut Vec<u8>, x: f64, y: f64, text: &str, font: f64) {
     push_f64(body, w);
     body.extend_from_slice(b"\" height=\"");
     push_f64(body, font + 4.0);
-    body.extend_from_slice(b"\" rx=\"2\" fill=\"#fff\"/><text text-anchor=\"middle\" y=\"");
+    body.extend_from_slice(b"\" rx=\"2\" fill=\"");
+    body.extend_from_slice(scheme.paper.as_bytes());
+    body.extend_from_slice(b"\"/><text text-anchor=\"middle\" y=\"");
     push_f64(body, (0.3 * font).round());
     body.extend_from_slice(b"\" font-size=\"");
     push_f64(body, font);
@@ -834,6 +920,10 @@ fn label(body: &mut Vec<u8>, x: f64, y: f64, text: &str, font: f64) {
     body.extend_from_slice(b"</text></g>");
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the palette joins the caption's existing placement arguments"
+)]
 fn write_caption(
     body: &mut Vec<u8>,
     cap: &Cap,
@@ -842,6 +932,7 @@ fn write_caption(
     gy: i64,
     y_tick: i64,
     hscale: i32,
+    scheme: &Scheme,
 ) {
     if let Some(text) = &cap.text {
         let y = if head {
@@ -866,8 +957,17 @@ fn write_caption(
     let mstep = 2.0 * hscale as f64 * XS as f64;
     let (ticks, tocks) = tick_counts(xmax, hscale);
     let y = if head { -5.0 } else { gy as f64 + 15.0 };
-    write_ticks(body, &cap.tick, 0.0, mstep, y, ticks, cap.every);
-    write_ticks(body, &cap.tock, mstep / 2.0, mstep, y, tocks, cap.every);
+    write_ticks(body, &cap.tick, 0.0, mstep, y, ticks, cap.every, scheme);
+    write_ticks(
+        body,
+        &cap.tock,
+        mstep / 2.0,
+        mstep,
+        y,
+        tocks,
+        cap.every,
+        scheme,
+    );
 }
 
 fn tick_counts(xmax: f64, hscale: i32) -> (usize, usize) {
@@ -920,6 +1020,10 @@ fn tick_width(tick: &Tick, count: usize) -> f64 {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the palette joins the tick writer's existing placement arguments"
+)]
 fn write_ticks(
     body: &mut Vec<u8>,
     tick: &Tick,
@@ -928,6 +1032,7 @@ fn write_ticks(
     y: f64,
     count: usize,
     every: f64,
+    scheme: &Scheme,
 ) {
     let count = match tick {
         Tick::Off => return,
@@ -971,7 +1076,11 @@ fn write_ticks(
             Tick::Off => unreachable!(),
         };
         if !opened {
-            body.extend_from_slice(b"<g fill=\"#64748b\" font-size=\"11\" text-anchor=\"middle\" xml:space=\"preserve\">");
+            body.extend_from_slice(b"<g fill=\"");
+            body.extend_from_slice(scheme.tick.as_bytes());
+            body.extend_from_slice(
+                b"\" font-size=\"11\" text-anchor=\"middle\" xml:space=\"preserve\">",
+            );
             opened = true;
         }
         tick_text(body, i as f64 * dx + x0, y, text);
@@ -1094,7 +1203,7 @@ fn append_i64(out: &mut String, n: i64) {
     out.push_str(std::str::from_utf8(&tmp[i..]).unwrap_or("0"));
 }
 
-fn write_groups(body: &mut Vec<u8>, doc: &Doc, yhead: i64) {
+fn write_groups(body: &mut Vec<u8>, doc: &Doc, yhead: i64, scheme: &Scheme) {
     body.extend_from_slice(b"<g>");
     for g in &doc.groups {
         if g.height <= 0 {
@@ -1103,7 +1212,9 @@ fn write_groups(body: &mut Vec<u8>, doc: &Doc, yhead: i64) {
         let x = g.x as f64 + 0.5;
         let y = g.y as f64 * YO as f64 + 3.5 + yhead as f64;
         let h = g.height as f64 * YO as f64 - 16.0;
-        body.extend_from_slice(b"<path fill=\"none\" stroke=\"#0041c4\" stroke-width=\"1\" d=\"M");
+        body.extend_from_slice(b"<path fill=\"none\" stroke=\"");
+        body.extend_from_slice(scheme.bracket.as_bytes());
+        body.extend_from_slice(b"\" stroke-width=\"1\" d=\"M");
         push_f64(body, x);
         body.push(b',');
         push_f64(body, y);
@@ -1117,7 +1228,9 @@ fn write_groups(body: &mut Vec<u8>, doc: &Doc, yhead: i64) {
             push_f64(body, tx);
             body.push(b',');
             push_f64(body, ty);
-            body.extend_from_slice(b") rotate(270)\"><text text-anchor=\"middle\" fill=\"#475569\" xml:space=\"preserve\"");
+            body.extend_from_slice(b") rotate(270)\"><text text-anchor=\"middle\" fill=\"");
+            body.extend_from_slice(scheme.muted.as_bytes());
+            body.extend_from_slice(b"\" xml:space=\"preserve\"");
             let room = (g.height as f64 * YO as f64 - 12.0).max(1.0);
             if text_width(name, 12.0) > room {
                 body.extend_from_slice(b" textLength=\"");
@@ -1139,6 +1252,7 @@ fn draw_gap_string(
     hscale: i32,
     xmin: i64,
     width: f64,
+    scheme: &Scheme,
 ) {
     if nlanes <= 0 || width <= 0.0 {
         return;
@@ -1163,72 +1277,80 @@ fn draw_gap_string(
         body.extend_from_slice(b")\">");
         match c {
             "1" | "|" => {
-                backdrop(body, 4.0, height);
-                vline(body, 0.0, height);
+                backdrop(body, 4.0, height, scheme);
+                vline(body, 0.0, height, scheme);
             }
             "2" => {
-                backdrop(body, 4.0, height);
-                vline(body, -2.0, height);
-                vline(body, 2.0, height);
+                backdrop(body, 4.0, height, scheme);
+                vline(body, -2.0, height, scheme);
+                vline(body, 2.0, height, scheme);
             }
             "3" => {
-                backdrop(body, 6.0, height);
-                vline(body, -3.0, height);
-                vline(body, 0.0, height);
-                vline(body, 3.0, height);
+                backdrop(body, 6.0, height, scheme);
+                vline(body, -3.0, height, scheme);
+                vline(body, 0.0, height, scheme);
+                vline(body, 3.0, height, scheme);
             }
             "[" => {
-                backdrop(body, 4.0, height);
-                body.extend_from_slice(b"<path fill=\"none\" stroke=\"#000\" d=\"M2,0 h-4 v");
+                backdrop(body, 4.0, height, scheme);
+                body.extend_from_slice(b"<path fill=\"none\" stroke=\"");
+                body.extend_from_slice(scheme.ink.as_bytes());
+                body.extend_from_slice(b"\" d=\"M2,0 h-4 v");
                 push_i64(body, height - 1);
                 body.extend_from_slice(b" h4\"/>");
             }
             "]" => {
-                backdrop(body, 4.0, height);
-                body.extend_from_slice(b"<path fill=\"none\" stroke=\"#000\" d=\"M-2,0 h4 v");
+                backdrop(body, 4.0, height, scheme);
+                body.extend_from_slice(b"<path fill=\"none\" stroke=\"");
+                body.extend_from_slice(scheme.ink.as_bytes());
+                body.extend_from_slice(b"\" d=\"M-2,0 h4 v");
                 push_i64(body, height - 1);
                 body.extend_from_slice(b" h-4\"/>");
             }
             "(" => {
-                backdrop(body, 4.0, height);
-                body.extend_from_slice(
-                    b"<path fill=\"none\" stroke=\"#000\" d=\"M2,0 a4,4 0 0 0 -4,4 v",
-                );
+                backdrop(body, 4.0, height, scheme);
+                body.extend_from_slice(b"<path fill=\"none\" stroke=\"");
+                body.extend_from_slice(scheme.ink.as_bytes());
+                body.extend_from_slice(b"\" d=\"M2,0 a4,4 0 0 0 -4,4 v");
                 push_i64(body, height - 9);
                 body.extend_from_slice(b" a4,4 0 0 0 4,4\"/>");
             }
             ")" => {
-                backdrop(body, 4.0, height);
-                body.extend_from_slice(
-                    b"<path fill=\"none\" stroke=\"#000\" d=\"M-2,0 a4,4 0 0 1 4,4 v",
-                );
+                backdrop(body, 4.0, height, scheme);
+                body.extend_from_slice(b"<path fill=\"none\" stroke=\"");
+                body.extend_from_slice(scheme.ink.as_bytes());
+                body.extend_from_slice(b"\" d=\"M-2,0 a4,4 0 0 1 4,4 v");
                 push_i64(body, height - 9);
                 body.extend_from_slice(b" a4,4 0 0 1 -4,4\"/>");
             }
-            _ => backdrop(body, 4.0, height),
+            _ => backdrop(body, 4.0, height, scheme),
         }
         body.extend_from_slice(b"</g>");
     }
 }
 
-fn backdrop(body: &mut Vec<u8>, w: f64, h: i64) {
+fn backdrop(body: &mut Vec<u8>, w: f64, h: i64, scheme: &Scheme) {
     body.extend_from_slice(b"<rect x=\"");
     push_f64(body, -w / 2.0);
     body.extend_from_slice(b"\" width=\"");
     push_f64(body, w);
     body.extend_from_slice(b"\" height=\"");
     push_i64(body, h);
-    body.extend_from_slice(b"\" fill=\"#fff\" fill-opacity=\"0.9\" stroke=\"none\"/>");
+    body.extend_from_slice(b"\" fill=\"");
+    body.extend_from_slice(scheme.paper.as_bytes());
+    body.extend_from_slice(b"\" fill-opacity=\"0.9\" stroke=\"none\"/>");
 }
 
-fn vline(body: &mut Vec<u8>, x: f64, h: i64) {
+fn vline(body: &mut Vec<u8>, x: f64, h: i64, scheme: &Scheme) {
     body.extend_from_slice(b"<line x1=\"");
     push_f64(body, x);
     body.extend_from_slice(b"\" x2=\"");
     push_f64(body, x);
     body.extend_from_slice(b"\" y1=\"0\" y2=\"");
     push_i64(body, h);
-    body.extend_from_slice(b"\" stroke=\"#000\" stroke-width=\"1\"/>");
+    body.extend_from_slice(b"\" stroke=\"");
+    body.extend_from_slice(scheme.ink.as_bytes());
+    body.extend_from_slice(b"\" stroke-width=\"1\"/>");
 }
 
 #[cfg(test)]
@@ -1252,7 +1374,16 @@ mod tests {
             fixed: false,
         };
         let mut out = Vec::new();
-        write_ticks(&mut out, &tick, 0.0, 40.0, 0.0, 20, 2.0);
+        write_ticks(
+            &mut out,
+            &tick,
+            0.0,
+            40.0,
+            0.0,
+            20,
+            2.0,
+            &crate::scheme::LIGHT,
+        );
         let svg = String::from_utf8(out).unwrap();
         assert!(svg.contains("x=\"40\" y=\"0\">10002</text>"));
         assert!(!svg.contains(">10001</text>"));
@@ -1286,7 +1417,16 @@ mod tests {
         let width = tick_width(&tick, 10);
         assert!(width > 80.0);
         let mut out = Vec::new();
-        write_ticks(&mut out, &tick, 0.0, 40.0, 0.0, 10, 0.0);
+        write_ticks(
+            &mut out,
+            &tick,
+            0.0,
+            40.0,
+            0.0,
+            10,
+            0.0,
+            &crate::scheme::LIGHT,
+        );
         let svg = String::from_utf8(out).unwrap();
         assert!(svg.matches("<text ").count() <= 4);
         assert!(svg.contains("0.000000000000000"));
@@ -1304,7 +1444,16 @@ mod tests {
             fixed: false,
         };
         let mut out = Vec::new();
-        write_ticks(&mut out, &tick, 0.0, 40.0, 0.0, 1_000_000_000, 2.0);
+        write_ticks(
+            &mut out,
+            &tick,
+            0.0,
+            40.0,
+            0.0,
+            1_000_000_000,
+            2.0,
+            &crate::scheme::LIGHT,
+        );
         let svg = String::from_utf8(out).unwrap();
         let count = svg.matches("<text ").count();
         assert!(count > 0 && count <= 10_000);
@@ -1313,13 +1462,29 @@ mod tests {
     #[test]
     fn annotation_geometry_is_bounded_by_the_viewport() {
         let mut out = Vec::new();
-        draw_ou(&mut out, &"2".repeat(10_000), false, 1.0, 5_000.0, 80.0);
+        draw_ou(
+            &mut out,
+            &"2".repeat(10_000),
+            false,
+            1.0,
+            5_000.0,
+            80.0,
+            &crate::scheme::LIGHT,
+        );
         assert!(out.len() < 1_000);
         out.clear();
-        draw_gap_string(&mut out, &"| ".repeat(10_000), 2, 1, 10_000, 80.0);
+        draw_gap_string(
+            &mut out,
+            &"| ".repeat(10_000),
+            2,
+            1,
+            10_000,
+            80.0,
+            &crate::scheme::LIGHT,
+        );
         assert!(out.len() < 1_000);
         out.clear();
-        draw_gap_string(&mut out, "( ) [ ]", 0, 1, 0, 80.0);
+        draw_gap_string(&mut out, "( ) [ ]", 0, 1, 0, 80.0, &crate::scheme::LIGHT);
         assert!(out.is_empty());
     }
 }

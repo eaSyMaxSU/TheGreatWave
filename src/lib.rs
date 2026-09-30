@@ -16,6 +16,7 @@ mod geom;
 mod native;
 mod path;
 mod scan;
+pub mod scheme;
 mod w;
 mod wave;
 mod width;
@@ -101,6 +102,24 @@ pub fn render_with_format(
     out.clear();
     let doc = parse(source, format)?;
     if let Err(e) = emit::write(&doc, out, indent) {
+        out.clear();
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Render `source` with `scheme`. File output uses [`render_with_format`], which
+/// is the light palette. A dark window calls this for the picture only.
+pub fn render_themed(
+    source: &str,
+    out: &mut Vec<u8>,
+    indent: u8,
+    format: InputFormat,
+    scheme: &'static scheme::Scheme,
+) -> Result<(), Error> {
+    out.clear();
+    let doc = parse(source, format)?;
+    if let Err(e) = emit::write_themed(&doc, out, indent, scheme) {
         out.clear();
         return Err(e);
     }

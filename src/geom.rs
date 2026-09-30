@@ -1,5 +1,6 @@
 //! Draw runs as patterns, rectangles, and short transition cells.
 
+use crate::scheme::Scheme;
 use crate::w::push_i64;
 use crate::wave::{Code, Pat};
 use crate::{XS, YS};
@@ -19,15 +20,22 @@ pub(crate) struct Paint {
     pub clocks: Vec<ClockKey>,
     clock_ids: HashMap<ClockKey, usize>,
     pub hatch: bool,
+    pub scheme: &'static Scheme,
 }
 
 impl Paint {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
+        Self::with(&crate::scheme::LIGHT)
+    }
+
+    pub(crate) fn with(scheme: &'static Scheme) -> Self {
         Self {
             body: Vec::new(),
             clocks: Vec::new(),
             clock_ids: HashMap::new(),
             hatch: false,
+            scheme,
         }
     }
 }
@@ -36,7 +44,11 @@ pub(crate) fn paint_wave(paint: &mut Paint, pats: &[Pat], skip: i64, end: i64) {
     if end <= skip {
         return;
     }
-    paint.body.extend_from_slice(b"<g fill=\"none\" stroke=\"#000\" stroke-width=\"1\" stroke-linecap=\"round\" stroke-linejoin=\"round\">");
+    paint.body.extend_from_slice(b"<g fill=\"none\" stroke=\"");
+    paint.body.extend_from_slice(paint.scheme.ink.as_bytes());
+    paint.body.extend_from_slice(
+        b"\" stroke-width=\"1\" stroke-linecap=\"round\" stroke-linejoin=\"round\">",
+    );
     for p in pats {
         let at = match *p {
             Pat::Fill { at, .. } | Pat::Lead { at, .. } | Pat::Clock { at, .. } => at,
@@ -129,7 +141,13 @@ fn draw_clock(
     // the initial edge or painting an edge belonging to the *next* cycle.
     const PAD: i64 = 4;
     if at >= skip {
-        clock_edge(&mut paint.body, s0, x_start, x_start + PAD);
+        clock_edge(
+            &mut paint.body,
+            s0,
+            x_start,
+            x_start + PAD,
+            paint.scheme.ink,
+        );
     }
     let left = (x_start + PAD).max(0);
     let complete = at + total <= end;
@@ -167,11 +185,11 @@ fn draw_span(paint: &mut Paint, code: Code, x: i64, w: i64) {
         Code::Mid => hline(paint, x, w, YS / 2, false),
         Code::X => {
             paint.hatch = true;
-            rect(&mut paint.body, x, 0, w, YS, "url(#xh)", false);
+            rect(&mut paint.body, x, 0, w, YS, "url(#xh)");
             rails(paint, x, w);
         }
         Code::Bus(n) => {
-            rect(&mut paint.body, x, 0, w, YS, bus_fill(n), false);
+            rect(&mut paint.body, x, 0, w, YS, paint.scheme.bus(n));
             rails(paint, x, w);
         }
         other => draw_one(paint, other, x),
@@ -196,23 +214,24 @@ fn edge(paint: &mut Paint, x: i64, rise: bool, arrow: bool) {
         (false, true) => Code::FallA,
         (false, false) => Code::Fall,
     };
-    clock_edge(&mut paint.body, code, x, x + XS);
+    clock_edge(&mut paint.body, code, x, x + XS, paint.scheme.ink);
 }
 
 fn draw_soft(paint: &mut Paint, prev: u8, next: u8, x: i64) {
     let a = end_kind(prev);
     let b = end_kind(next);
+    let scheme = paint.scheme;
     match (a, b) {
-        (End::Bus(c1), End::Bus(c2)) => band_band(paint, x, bus_fill(c1), bus_fill(c2)),
-        (End::Line { y, dash }, End::Bus(c)) => line_band(paint, x, y, dash, bus_fill(c)),
-        (End::Bus(c), End::Line { y, dash }) => band_line(paint, x, bus_fill(c), y, dash),
+        (End::Bus(c1), End::Bus(c2)) => band_band(paint, x, scheme.bus(c1), scheme.bus(c2)),
+        (End::Line { y, dash }, End::Bus(c)) => line_band(paint, x, y, dash, scheme.bus(c)),
+        (End::Bus(c), End::Line { y, dash }) => band_line(paint, x, scheme.bus(c), y, dash),
         (End::X, End::Bus(c)) => {
             paint.hatch = true;
-            band_band(paint, x, "url(#xh)", bus_fill(c));
+            band_band(paint, x, "url(#xh)", scheme.bus(c));
         }
         (End::Bus(c), End::X) => {
             paint.hatch = true;
-            band_band(paint, x, bus_fill(c), "url(#xh)");
+            band_band(paint, x, scheme.bus(c), "url(#xh)");
         }
         (End::X, End::X) => draw_span(paint, Code::X, x, XS),
         (End::X, End::Line { y, dash }) => {
@@ -362,7 +381,7 @@ fn rails(paint: &mut Paint, x: i64, w: i64) {
     close_stroke(&mut paint.body, false);
 }
 
-fn arrow_at(body: &mut Vec<u8>, x: i64, rise: bool) {
+fn arrow_at(body: &mut Vec<u8>, x: i64, rise: bool, ink: &str) {
     open(body);
     if rise {
         cmd_m(body, x - 3, 12);
@@ -375,23 +394,10 @@ fn arrow_at(body: &mut Vec<u8>, x: i64, rise: bool) {
         cmd_l(body, x + 3, 8);
         body.extend_from_slice(b"Z");
     }
-    close_fill(body, "#000");
+    close_fill(body, ink);
 }
 
-pub(crate) fn bus_fill(n: u8) -> &'static str {
-    match n {
-        3 => "#ffffb4",
-        4 => "#ffe0b9",
-        5 => "#b9e0ff",
-        6 => "#ccfdfe",
-        7 => "#cdfdc5",
-        8 => "#f0c1fb",
-        9 => "#f5c2c0",
-        _ => "#ffffff",
-    }
-}
-
-pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey) {
+pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey, ink: &str) {
     let half = (key.extra + 1) * XS;
     let full = half * 2;
     body.extend_from_slice(b"<pattern id=\"k");
@@ -400,7 +406,11 @@ pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey)
     push_i64(body, full);
     body.extend_from_slice(b"\" height=\"");
     push_i64(body, YS + 4);
-    body.extend_from_slice(b"\" patternUnits=\"userSpaceOnUse\" fill=\"none\" stroke=\"#000\" stroke-width=\"1\" stroke-linecap=\"round\" stroke-linejoin=\"round\" viewBox=\"-4 -2 ");
+    body.extend_from_slice(b"\" patternUnits=\"userSpaceOnUse\" fill=\"none\" stroke=\"");
+    body.extend_from_slice(ink.as_bytes());
+    body.extend_from_slice(
+        b"\" stroke-width=\"1\" stroke-linecap=\"round\" stroke-linejoin=\"round\" viewBox=\"-4 -2 ",
+    );
     push_i64(body, full);
     body.push(b' ');
     push_i64(body, YS + 4);
@@ -413,26 +423,26 @@ pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey)
     edge_d(body, key.s2, half, full - 4);
     close_stroke(body, false);
     if matches!(key.s0, Code::RiseA) {
-        arrow_at(body, 0, true);
+        arrow_at(body, 0, true, ink);
     }
     if matches!(key.s0, Code::FallA) {
-        arrow_at(body, 0, false);
+        arrow_at(body, 0, false, ink);
     }
     if matches!(key.s2, Code::RiseA) {
-        arrow_at(body, half, true);
+        arrow_at(body, half, true, ink);
     }
     if matches!(key.s2, Code::FallA) {
-        arrow_at(body, half, false);
+        arrow_at(body, half, false, ink);
     }
     body.extend_from_slice(b"</pattern>");
 }
 
-fn clock_edge(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64) {
+fn clock_edge(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64, ink: &str) {
     open(body);
     edge_d(body, code, x0, x1);
     close_stroke(body, matches!(code, Code::DashH | Code::DashL));
     if matches!(code, Code::RiseA | Code::FallA) {
-        arrow_at(body, x0, matches!(code, Code::RiseA));
+        arrow_at(body, x0, matches!(code, Code::RiseA), ink);
     }
 }
 
@@ -463,7 +473,7 @@ fn edge_d(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64) {
     }
 }
 
-fn rect(body: &mut Vec<u8>, x: i64, y: i64, w: i64, h: i64, fill: &str, stroke: bool) {
+fn rect(body: &mut Vec<u8>, x: i64, y: i64, w: i64, h: i64, fill: &str) {
     body.extend_from_slice(b"<rect x=\"");
     push_i64(body, x);
     body.extend_from_slice(b"\" y=\"");
@@ -474,11 +484,7 @@ fn rect(body: &mut Vec<u8>, x: i64, y: i64, w: i64, h: i64, fill: &str, stroke: 
     push_i64(body, h);
     body.extend_from_slice(b"\" fill=\"");
     body.extend_from_slice(fill.as_bytes());
-    if stroke {
-        body.extend_from_slice(b"\" stroke=\"#000\" stroke-width=\"1\"/>");
-    } else {
-        body.extend_from_slice(b"\" stroke=\"none\"/>");
-    }
+    body.extend_from_slice(b"\" stroke=\"none\"/>");
 }
 
 fn open(body: &mut Vec<u8>) {
@@ -617,6 +623,7 @@ mod tests {
                 s3: Code::Low,
                 extra: 0,
             },
+            crate::scheme::LIGHT.ink,
         );
         let svg = std::str::from_utf8(&svg).unwrap();
         assert!(svg.contains("viewBox=\"-4 -2 40 24\""));

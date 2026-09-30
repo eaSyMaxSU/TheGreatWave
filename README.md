@@ -59,6 +59,8 @@ A syntax error, a missing file, or a write that fails leaves the last good pictu
 
 In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. Use the trackpad or a scrollbar; hold Shift to scroll sideways. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
 
+The window follows the system appearance. Default light is the palette written into the SVG. Default dark draws the same diagram in a dark palette. Ctrl-Shift-L (Command-Shift-L on macOS) switches between them and keeps the choice. The saved file stays on the light palette.
+
 The saved SVG stays compact: a long clock is one pattern. The window paints only the visible slice, repeating that pattern as strokes across the part on screen.
 
 ## Builds

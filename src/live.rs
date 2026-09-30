@@ -27,7 +27,7 @@ pub(crate) struct Job {
     pub(crate) input: PathBuf,
     pub(crate) label: String,
     pub(crate) output: Option<Output>,
-    format: InputFormat,
+    pub(crate) format: InputFormat,
     indent: u8,
 }
 
