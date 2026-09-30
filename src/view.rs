@@ -1212,7 +1212,12 @@ mod tests {
         assert_eq!(state.apply_text("a.tgw", bad), Step::StatusOnly);
         assert_eq!(state.svg, svg);
         assert_eq!(state.generation, generation);
-        assert_eq!(state.status(), Some("a.tgw:1:7: unknown wave symbol '?'"));
+        assert_eq!(
+            state.status(),
+            Some(
+                "a.tgw:1:7: unknown wave symbol '?'; expected p n P N h l H L 0 1 x d u z = 2-9 . | < >"
+            )
+        );
         assert_eq!(state.apply_text("a.tgw", bad), Step::Unchanged);
         assert_eq!(state.generation, generation);
         assert_eq!(state.svg, svg);
@@ -1246,7 +1251,12 @@ mod tests {
         let generation = state.generation;
         state.mark_unavailable("a.tgw: file is missing".into());
         assert_eq!(state.apply_text("a.tgw", "clk: p?\n"), Step::StatusOnly);
-        assert_eq!(state.status(), Some("a.tgw:1:7: unknown wave symbol '?'"));
+        assert_eq!(
+            state.status(),
+            Some(
+                "a.tgw:1:7: unknown wave symbol '?'; expected p n P N h l H L 0 1 x d u z = 2-9 . | < >"
+            )
+        );
         assert_eq!(state.svg, svg);
         assert_eq!(state.generation, generation);
     }

@@ -39,7 +39,7 @@ WaveJSON and JSON5 still render. The syntax is detected automatically, or chosen
 ./target/release/tgw old-diagram.json5 --convert -o diagram.tgw
 ```
 
-`--convert` rewrites a native diagram into aligned columns as well. Supported data is kept. Comments and unsupported JSON properties are left out.
+`--convert` rewrites a native diagram into aligned columns as well. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out.
 
 ## Watch and view
 
@@ -119,13 +119,15 @@ Labels come after `=>`, separated by spaces. Quote a label that contains a space
 @edge a<->b write pulse
 ```
 
+A node is one letter in the mask: `.` skips a cycle, and `[setup]` names that one cycle with a word. An uppercase letter is drawn without a label. `@edge setup~>hold "tSU"` connects two names. A missing name or an unknown connector is an error, and the message lists the nodes or the connectors.
+
 `@group Name` and `@end` nest, up to 64 deep. `@group` with no name draws an unlabeled bracket.
 
 | Option | Effect |
 | --- | --- |
 | `period=2` | Make each symbol that many cycles long. Must be positive. |
 | `phase=0.25` | Shift the signal earlier by a quarter cycle. Negative values start it later. |
-| `node=.a.B.` | Name positions on the wave. An uppercase name is a node with no label. |
+| `node=.a.B.[setup].` | Name positions on the wave. One letter is one cycle. `[setup]` is one cycle with a word. `.` skips a cycle. An uppercase letter has no label. |
 | `over=1..0` | A colored bar above the lane. `1`–`9` choose the color, `.` continues, `0` ends. |
 | `under=2..0` | The same bar below the lane. |
 
@@ -160,7 +162,7 @@ Spaces inside a wave are ignored. A clock is at least two half-cycles. A level i
 | Grid | `@grid on`, `@grid off` |
 | Edge label size | `@arc-font 12` |
 | Gaps along the whole diagram | `@gaps . . 1 . \|` |
-| An edge between nodes | `@edge a~>b propagation delay` |
+| An edge between nodes | `@edge a~>b propagation delay`, `@edge setup~>hold "tSU"` |
 | A diagram with no lanes | `@empty` |
 
 Any tick directive accepts `off`. For a numeric series, the first number is the start and the optional second is the step, which also sets the decimal places. A series with step 1 follows `@bounds`. Any other series keeps the start you wrote. Labels are thinned when they would collide, and a series stops at 10,000 labels.

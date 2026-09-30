@@ -15,15 +15,21 @@ function escapeHtml(value) {
   })[character]);
 }
 
-async function main(outputDirectory = process.argv[2] || '/tmp/tgw-visual') {
+async function main(outputDirectory = process.argv[2] || '/tmp/tgw-visual', extras = process.argv.slice(3)) {
   const directory = path.resolve(outputDirectory);
   const fixturesDirectory = path.resolve(__dirname, '../tests/fixtures');
   const names = (await fs.readdir(fixturesDirectory)).filter(name => name.endsWith('.svg')).sort();
-  if (!names.length) throw new Error(`No SVG fixtures in ${fixturesDirectory}`);
   const fixtures = await Promise.all(names.map(async name => ({
     name,
     source: await fs.readFile(path.join(fixturesDirectory, name), 'utf8'),
   })));
+  for (const extra of extras) {
+    fixtures.push({
+      name: path.basename(extra),
+      source: await fs.readFile(extra, 'utf8'),
+    });
+  }
+  if (!fixtures.length) throw new Error(`No SVG fixtures in ${fixturesDirectory}`);
   const playwright = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
   const browser = await playwright.chromium.launch({
     headless: true,

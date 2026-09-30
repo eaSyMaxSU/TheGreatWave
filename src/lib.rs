@@ -86,7 +86,19 @@ fn parse(source: &str, format: InputFormat) -> Result<scan::Doc, Error> {
     };
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     if json {
-        scan::parse(source)
+        match scan::parse(source) {
+            Ok(doc) => Ok(doc),
+            Err(error)
+                if matches!(format, InputFormat::Auto)
+                    && (trimmed.starts_with("//") || trimmed.starts_with("/*")) =>
+            {
+                Err(Error {
+                    offset: error.offset,
+                    message: format!("{}; a .tgw comment starts with #", error.message),
+                })
+            }
+            Err(error) => Err(error),
+        }
     } else {
         native::parse(source)
     }

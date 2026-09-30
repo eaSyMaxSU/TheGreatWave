@@ -179,7 +179,7 @@ mod tests {
 @group Inner\n  clk: p.....\n  data: =23456789\n  unknown: xx..\n\
  bars: 0101 ; over=123456789 under=1.2.3.4.5.6.7.8.9\n\
  analog: path M0,0 L2,1\n  gap: 01|10\n@end\n\
- a: 01.. ; node=.a.\nb: 0.1. ; node=..b\n@edge a~>b delay\n@edge a-bad-b\n@gaps | [\n";
+ a: 01.. ; node=.a.\nb: 0.1. ; node=..b\n@edge a~>b delay\n@gaps | [\n";
 
     #[test]
     fn schemes_cycle() {

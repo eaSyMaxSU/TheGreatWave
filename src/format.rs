@@ -1,25 +1,45 @@
 //! A stable, readable native representation of parsed timing diagrams.
-use crate::scan::{Body, Cap, Doc, Group, Lane, Tick};
+use crate::scan::{Body, Cap, Doc, Edge, Group, Lane, Remark, Tick};
 use std::fmt::Write;
 
 pub(crate) fn write(doc: &Doc) -> String {
     let mut out = String::new();
-    caption(&mut out, &doc.head, false, doc.xmin);
-    caption(&mut out, &doc.foot, true, doc.xmin);
-    if doc.hscale != 1 {
-        writeln!(out, "@scale {}", doc.hscale).unwrap();
+    caption(&mut out, &doc.head, false, doc.xmin, &doc.notes);
+    caption(&mut out, &doc.foot, true, doc.xmin, &doc.notes);
+    if doc.hscale != 1 || !doc.notes.scale.is_empty() {
+        directive_line(
+            &mut out,
+            &doc.notes.scale,
+            &format!("@scale {}", doc.hscale),
+        );
     }
-    if doc.xmin != 0 || doc.xmax_cfg != 1_000_000_000_000 {
-        writeln!(out, "@bounds {} {}", doc.xmin / 2, doc.xmax_cfg / 2).unwrap();
+    if doc.xmin != 0 || doc.xmax_cfg != 1_000_000_000_000 || !doc.notes.bounds.is_empty() {
+        directive_line(
+            &mut out,
+            &doc.notes.bounds,
+            &format!("@bounds {} {}", doc.xmin / 2, doc.xmax_cfg / 2),
+        );
     }
-    if !doc.marks {
-        out.push_str("@grid off\n");
+    if !doc.marks || !doc.notes.grid.is_empty() {
+        directive_line(
+            &mut out,
+            &doc.notes.grid,
+            if doc.marks { "@grid on" } else { "@grid off" },
+        );
     }
-    if doc.arc_font != 11.0 {
-        writeln!(out, "@arc-font {}", doc.arc_font).unwrap();
+    if doc.arc_font != 11.0 || !doc.notes.arc_font.is_empty() {
+        directive_line(
+            &mut out,
+            &doc.notes.arc_font,
+            &format!("@arc-font {}", doc.arc_font),
+        );
     }
     if let Some(gaps) = &doc.gaps {
-        directive(&mut out, "gaps", gaps);
+        let mut line = String::from("@gaps ");
+        value(&mut line, gaps, false);
+        directive_line(&mut out, &doc.notes.gaps, &line);
+    } else if !doc.notes.gaps.is_empty() {
+        directive_line(&mut out, &doc.notes.gaps, "@gaps");
     }
     if !out.is_empty() && (!doc.lanes.is_empty() || !doc.groups.is_empty()) {
         out.push('\n');
@@ -36,49 +56,53 @@ pub(crate) fn write(doc: &Doc) -> String {
     let mut columns = Vec::new();
     for row in 0..=doc.lanes.len() {
         while open.last().is_some_and(|g| g.y + g.height <= row as i64) {
-            open.pop();
-            indentation(&mut out, open.len());
-            out.push_str("@end\n");
+            let group = open.pop().unwrap();
+            write_end(&mut out, open.len(), group);
         }
         while next < groups.len() && groups[next].y <= row as i64 {
             let group = groups[next];
             next += 1;
+            write_comments(&mut out, open.len(), &group.leading);
             indentation(&mut out, open.len());
             out.push_str("@group");
             if let Some(name) = &group.name {
                 out.push(' ');
                 value(&mut out, name, false);
             }
+            write_trailing(&mut out, &group.trailing);
             out.push('\n');
             if group.height <= 0 {
-                indentation(&mut out, open.len());
-                out.push_str("@end\n");
+                write_end(&mut out, open.len(), group);
             } else {
                 open.push(group);
             }
         }
         if let Some(lane) = doc.lanes.get(row) {
+            write_comments(&mut out, open.len(), &lane.leading);
             indentation(&mut out, open.len());
             if let Some((at, width)) = lane_line(&mut out, lane) {
                 columns.push((at, width + open.len() * 2));
             }
         }
     }
-    while open.pop().is_some() {
-        indentation(&mut out, open.len());
-        out.push_str("@end\n");
+    while let Some(group) = open.pop() {
+        write_end(&mut out, open.len(), group);
     }
     if doc.lanes.is_empty() {
-        out.push_str("@empty\n");
+        write_comments(&mut out, 0, &doc.notes.empty.leading);
+        out.push_str("@empty");
+        write_trailing(&mut out, &doc.notes.empty.trailing);
+        out.push('\n');
     }
     if !doc.edges.is_empty() {
         if !out.is_empty() {
             out.push('\n');
         }
         for edge in &doc.edges {
-            directive(&mut out, "edge", edge);
+            write_edge(&mut out, edge);
         }
     }
+    write_comments(&mut out, 0, &doc.notes.end);
     // Pad in one linear copy, avoiding repeated insertion into the output string.
     let width = columns
         .iter()
@@ -136,48 +160,121 @@ fn value(out: &mut String, text: &str, token: bool) {
     }
 }
 
-fn directive(out: &mut String, name: &str, text: &str) {
-    write!(out, "@{name} ").unwrap();
-    value(out, text, false);
+fn directive_line(out: &mut String, remark: &Remark, line: &str) {
+    write_comments(out, 0, &remark.leading);
+    out.push_str(line);
+    write_trailing(out, &remark.trailing);
     out.push('\n');
 }
 
-fn caption(out: &mut String, cap: &Cap, foot: bool, xmin: i64) {
-    if let Some(text) = &cap.text {
-        directive(out, if foot { "footer" } else { "title" }, text);
-    }
-    ticks(
-        out,
-        if foot { "foot-tick" } else { "tick" },
-        &cap.tick,
-        xmin,
-    );
-    ticks(
-        out,
-        if foot { "foot-tock" } else { "tock" },
-        &cap.tock,
-        xmin,
-    );
-    if cap.every != 0.0 {
-        writeln!(
-            out,
-            "@{} {}",
-            if foot { "foot-every" } else { "every" },
-            cap.every
-        )
-        .unwrap();
+fn write_comments(out: &mut String, depth: usize, comments: &[String]) {
+    for comment in comments {
+        indentation(out, depth);
+        out.push('#');
+        if !comment.is_empty() {
+            out.push(' ');
+            out.push_str(comment);
+        }
+        out.push('\n');
     }
 }
 
-fn ticks(out: &mut String, name: &str, tick: &Tick, xmin: i64) {
+fn write_trailing(out: &mut String, trailing: &Option<String>) {
+    if let Some(comment) = trailing {
+        out.push_str(" #");
+        if !comment.is_empty() {
+            out.push(' ');
+            out.push_str(comment);
+        }
+    }
+}
+
+fn write_end(out: &mut String, depth: usize, group: &Group) {
+    write_comments(out, depth, &group.end_leading);
+    indentation(out, depth);
+    out.push_str("@end");
+    write_trailing(out, &group.end_trailing);
+    out.push('\n');
+}
+
+fn write_edge(out: &mut String, edge: &Edge) {
+    write_comments(out, 0, &edge.leading);
+    write!(out, "@edge {}{}{}", edge.from, edge.shape, edge.to).unwrap();
+    if !edge.label.is_empty() {
+        out.push(' ');
+        if edge_label_needs_quotes(&edge.label) {
+            quoted(out, &edge.label);
+        } else {
+            out.push_str(&edge.label);
+        }
+    }
+    write_trailing(out, &edge.trailing);
+    out.push('\n');
+}
+
+fn edge_label_needs_quotes(text: &str) -> bool {
+    text.trim() != text
+        || text.starts_with(['@', '"', '\''])
+        || text.contains('#')
+        || text
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '"' | '\'' | '\\' | ';' | ':'))
+}
+
+fn caption(out: &mut String, cap: &Cap, foot: bool, xmin: i64, notes: &crate::scan::Notes) {
+    let (text_name, text_note, tick_name, tick_note, tock_name, tock_note, every_name, every_note) =
+        if foot {
+            (
+                "footer",
+                &notes.footer,
+                "foot-tick",
+                &notes.foot_tick,
+                "foot-tock",
+                &notes.foot_tock,
+                "foot-every",
+                &notes.foot_every,
+            )
+        } else {
+            (
+                "title",
+                &notes.title,
+                "tick",
+                &notes.tick,
+                "tock",
+                &notes.tock,
+                "every",
+                &notes.every,
+            )
+        };
+    if let Some(text) = &cap.text {
+        let mut line = format!("@{text_name} ");
+        value(&mut line, text, false);
+        directive_line(out, text_note, &line);
+    } else if !text_note.is_empty() {
+        directive_line(out, text_note, &format!("@{text_name}"));
+    }
+    ticks(out, tick_name, &cap.tick, xmin, tick_note);
+    ticks(out, tock_name, &cap.tock, xmin, tock_note);
+    if cap.every != 0.0 || !every_note.is_empty() {
+        directive_line(out, every_note, &format!("@{every_name} {}", cap.every));
+    }
+}
+
+fn ticks(out: &mut String, name: &str, tick: &Tick, xmin: i64, remark: &Remark) {
     match tick {
-        Tick::Off => {}
+        Tick::Off => {
+            if !remark.is_empty() {
+                directive_line(out, remark, &format!("@{name} off"));
+            }
+        }
         Tick::Labels(labels) => {
+            write_comments(out, 0, &remark.leading);
             write!(out, "@{name}").unwrap();
             for label in labels {
                 out.push(' ');
                 quoted(out, label);
             }
+            write_trailing(out, &remark.trailing);
             out.push('\n');
         }
         Tick::Series {
@@ -191,6 +288,7 @@ fn ticks(out: &mut String, name: &str, tick: &Tick, xmin: i64) {
             } else {
                 *offset
             };
+            write_comments(out, 0, &remark.leading);
             write!(out, "@{name} {start}").unwrap();
             if *fixed || *step != 1.0 || *dp != 0 {
                 let padded = format!("{:.*}", *dp, step);
@@ -201,6 +299,7 @@ fn ticks(out: &mut String, name: &str, tick: &Tick, xmin: i64) {
                 };
                 write!(out, " {spelling}").unwrap();
             }
+            write_trailing(out, &remark.trailing);
             out.push('\n');
         }
     }
@@ -216,7 +315,9 @@ fn lane_line(out: &mut String, lane: &Lane) -> Option<(usize, usize)> {
         && lane.over.is_none()
         && lane.under.is_none();
     if spacer {
-        out.push_str("---\n");
+        out.push_str("---");
+        write_trailing(out, &lane.trailing);
+        out.push('\n');
         return None;
     }
     let name_start = out.len();
@@ -261,6 +362,7 @@ fn lane_line(out: &mut String, lane: &Lane) -> Option<(usize, usize)> {
             value(out, option, false);
         }
     }
+    write_trailing(out, &lane.trailing);
     out.push('\n');
     column
 }

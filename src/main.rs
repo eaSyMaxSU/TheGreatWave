@@ -18,7 +18,7 @@ mod slice;
 mod view;
 
 const HELP: &str = "\
-The Great Wave — compact timing diagrams
+The Great Wave — ASIC timing diagrams in a text language people and agents can both write, rendered as compact SVG.
 
 Usage: tgw [OPTIONS] [INPUT]
 
@@ -62,6 +62,16 @@ Examples:
   tgw diagram.tgw --view
   tgw legacy.json5 --convert -o diagram.tgw
   tgw --format tgw < diagram.tgw > diagram.svg
+
+Language:
+  One signal per line: name: wave => labels ; node=
+  A # comment is kept. // is not a .tgw comment.
+  Wave symbols: p n P N h l H L 0 1 x d u z = 2-9
+  . repeats, | is a gap, and <...> is half a cycle.
+  node=.a.b. names cycles with one letter. . skips a cycle.
+  An uppercase letter is a node with no label. [setup] is one cycle with a word.
+  @edge setup~>hold \"tSU\" draws an arrow between two nodes.
+  A missing node or an unknown connector is an error.
 ";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -596,6 +606,12 @@ mod tests {
             assert!(text.contains(flag), "{flag}");
         }
         assert!(parse(&["--help", "--watch"]).unwrap().action == Action::Help);
+        assert!(text.contains("people and agents"));
+        assert!(text.contains("name: wave => labels ; node="));
+        assert!(text.contains("p n P N h l H L 0 1 x d u z = 2-9"));
+        assert!(text.contains("[setup]"));
+        assert!(text.contains("@edge setup~>hold \"tSU\""));
+        assert!(text.contains("A # comment"));
     }
 
     #[test]

@@ -1,0 +1,10 @@
+# Named timing points for an ASIC handshake.
+@title Setup and hold
+@tick 0
+
+clk:     p..... ; node=..[setup]..[hold]
+data:    x.345x => head body tail
+request: 0.1..0 ; node=.[req]....
+
+@edge req->setup
+@edge setup~>hold "tSU"

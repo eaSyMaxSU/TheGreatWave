@@ -1,7 +1,7 @@
 //! SVG document writer. Coordinates are appended as integers or short decimals.
 
 use crate::geom::{self, Paint};
-use crate::scan::{Body, Cap, Doc, Tick};
+use crate::scan::{node_slots, Body, Cap, Doc, Edge, Slot, Tick};
 use crate::scheme::Scheme;
 use crate::w::{prettify, push_esc, push_f64, push_i64};
 use crate::wave;
@@ -9,7 +9,7 @@ use crate::width::text_width;
 use crate::{Error, TGO, XLABEL, XS, Y0, YM, YO, YS};
 
 struct Ev {
-    ch: char,
+    name: String,
     x: f64,
     y: f64,
 }
@@ -27,6 +27,7 @@ pub(crate) fn write_themed(
     let n = doc.lanes.len() as i64;
     let mut waves = Vec::with_capacity(doc.lanes.len());
     let mut node_origins = Vec::with_capacity(doc.lanes.len());
+    let mut node_slots_per_lane = Vec::with_capacity(doc.lanes.len());
     let mut xmax = 0.0_f64;
     for lane in &doc.lanes {
         let wave = match &lane.body {
@@ -56,8 +57,12 @@ pub(crate) fn write_themed(
             (Some(_), Body::Wave(s)) => wave::node_positions(s, lane.period, doc.hscale)?,
             _ => Vec::new(),
         };
-        if let Some(node) = &lane.node {
-            let count = node.chars().count();
+        let slots = if let Some(node) = &lane.node {
+            let slots = node_slots(node).map_err(|err| Error {
+                offset: lane.node_at + err.rel,
+                message: format!("lane {}: {}", lane_label(&lane.name), err.message),
+            })?;
+            let count = slots.len();
             let extent = if let Some(w) = &wave {
                 w.len as f64
                     + count.saturating_sub(positions.len()) as f64
@@ -68,7 +73,11 @@ pub(crate) fn write_themed(
                 count as f64 * lane.period * doc.hscale as f64 * 2.0
             };
             xmax = xmax.max(extent - lane.phase * 2.0 - doc.xmin as f64);
-        }
+            Some(slots)
+        } else {
+            None
+        };
+        node_slots_per_lane.push(slots);
         node_origins.push(positions);
         waves.push(wave);
     }
@@ -242,33 +251,38 @@ pub(crate) fn write_themed(
             }
         }
         paint.body.extend_from_slice(b"</g></g>");
-        if let Some(node) = &lane.node {
+        if let Some(slots) = &node_slots_per_lane[idx] {
             let phase = lane.phase * 2.0 + doc.xmin as f64;
             let positions = &node_origins[idx];
-            for (pos, ch) in node.chars().enumerate() {
-                if ch != '.' {
-                    let origin = positions.get(pos).copied().unwrap_or_else(|| {
-                        let (start, extra) = if let Some(w) = &waves[idx] {
-                            (
-                                w.len as f64 * XS as f64,
-                                pos.saturating_sub(positions.len()),
-                            )
-                        } else {
-                            (0.0, pos)
-                        };
-                        start + XS as f64 * 2.0 * extra as f64 * lane.period * doc.hscale as f64
-                    });
-                    let x = origin - XS as f64 * phase + XLABEL as f64;
-                    let y = idx as f64 * YO as f64 + Y0 as f64 + YS as f64 * 0.5;
-                    events.push(Ev { ch, x, y });
-                }
+            for (pos, slot) in slots.iter().enumerate() {
+                let Slot::Name(name) = slot else {
+                    continue;
+                };
+                let origin = positions.get(pos).copied().unwrap_or_else(|| {
+                    let (start, extra) = if let Some(w) = &waves[idx] {
+                        (
+                            w.len as f64 * XS as f64,
+                            pos.saturating_sub(positions.len()),
+                        )
+                    } else {
+                        (0.0, pos)
+                    };
+                    start + XS as f64 * 2.0 * extra as f64 * lane.period * doc.hscale as f64
+                });
+                let x = origin - XS as f64 * phase + XLABEL as f64;
+                let y = idx as f64 * YO as f64 + Y0 as f64 + YS as f64 * 0.5;
+                events.push(Ev {
+                    name: name.clone(),
+                    x,
+                    y,
+                });
             }
         }
     }
     paint
         .body
         .extend_from_slice(b"<g clip-path=\"url(#plot-clip)\">");
-    write_arcs(&mut paint.body, doc, &events, plot_width, scheme);
+    write_arcs(&mut paint.body, doc, &events, plot_width, scheme)?;
     if let Some(g) = &doc.gaps {
         draw_gap_string(
             &mut paint.body,
@@ -615,38 +629,75 @@ fn ou_span(body: &mut Vec<u8>, start: f64, end: f64, color: &str, arrow: bool, w
     }
 }
 
-fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64, scheme: &Scheme) {
+fn write_arcs(
+    body: &mut Vec<u8>,
+    doc: &Doc,
+    events: &[Ev],
+    width: f64,
+    scheme: &Scheme,
+) -> Result<(), Error> {
     let mut lookup = std::collections::HashMap::with_capacity(events.len());
+    let mut defined = Vec::new();
     for ev in events {
-        lookup.entry(ev.ch).or_insert(ev);
+        if !lookup.contains_key(&ev.name) {
+            defined.push(ev.name.clone());
+        }
+        lookup.entry(ev.name.clone()).or_insert(ev);
     }
     let mut labels = Vec::new();
     for edge in &doc.edges {
-        let Some((from, to, shape, text)) = split_edge(edge) else {
-            continue;
-        };
-        let Some(a) = lookup.get(&from) else {
-            continue;
-        };
-        let Some(b) = lookup.get(&to) else {
-            continue;
-        };
+        let mut missing = Vec::new();
+        if !lookup.contains_key(&edge.from) {
+            missing.push(edge.from.as_str());
+        }
+        if edge.to != edge.from && !lookup.contains_key(&edge.to) {
+            missing.push(edge.to.as_str());
+        }
+        if !missing.is_empty() {
+            let nodes = if defined.is_empty() {
+                "none".to_string()
+            } else {
+                defined.join(" ")
+            };
+            return Err(Error {
+                offset: edge.offset,
+                message: format!(
+                    "{}: node {} is not defined; nodes are {nodes}",
+                    edge_sentence(edge),
+                    missing.join(" and ")
+                ),
+            });
+        }
+        let a = lookup[&edge.from];
+        let b = lookup[&edge.to];
         if a.x.max(b.x) < 0.0 || a.x.min(b.x) > width {
             continue;
         }
-        let (d, style, lx, ly) = arc_shape(&shape, a.x, a.y, b.x, b.y, !text.is_empty(), scheme);
+        let (d, style, lx, ly) = arc_shape(
+            &edge.shape,
+            a.x,
+            a.y,
+            b.x,
+            b.y,
+            !edge.label.is_empty(),
+            scheme,
+        )
+        .map_err(|_| Error {
+            offset: edge.offset,
+            message: format!("{}: unknown connector {}", edge_sentence(edge), edge.shape),
+        })?;
         body.extend_from_slice(b"<path d=\"");
         body.extend_from_slice(d.as_bytes());
         body.extend_from_slice(b"\" style=\"");
         body.extend_from_slice(style.as_bytes());
         body.extend_from_slice(b"\"/>");
-        if !text.is_empty() {
-            labels.push((lx, ly, text));
+        if !edge.label.is_empty() {
+            labels.push((lx, ly, edge.label.clone()));
         }
     }
     for ev in events {
-        if !ev.ch.is_uppercase() && ev.x >= 0.0 && ev.x <= width {
-            label(body, ev.x, ev.y, &ev.ch.to_string(), doc.arc_font, scheme);
+        if show_node_label(&ev.name) && ev.x >= 0.0 && ev.x <= width {
+            label(body, ev.x, ev.y, &ev.name, doc.arc_font, scheme);
         }
     }
     for (x, y, text) in labels {
@@ -660,22 +711,33 @@ fn write_arcs(body: &mut Vec<u8>, doc: &Doc, events: &[Ev], width: f64, scheme: 
             scheme,
         );
     }
+    Ok(())
 }
 
-fn split_edge(s: &str) -> Option<(char, char, String, String)> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
+fn show_node_label(name: &str) -> bool {
+    let mut chars = name.chars();
+    match (chars.next(), chars.next()) {
+        (Some(ch), None) => !ch.is_uppercase(),
+        (Some(_), Some(_)) => true,
+        _ => false,
     }
-    let head = s.split_whitespace().next()?;
-    let from = head.chars().next()?;
-    let to = head.chars().next_back()?;
-    if head.len() < from.len_utf8() + to.len_utf8() {
-        return None;
+}
+
+fn lane_label(name: &str) -> String {
+    if name.trim().is_empty() {
+        "unnamed".to_string()
+    } else {
+        format!("{name:?}")
     }
-    let shape = head[from.len_utf8()..head.len() - to.len_utf8()].to_string();
-    let label = s[head.len()..].trim_start().to_string();
-    Some((from, to, shape, label))
+}
+
+fn edge_sentence(edge: &Edge) -> String {
+    let mut text = format!("@edge {}{}{}", edge.from, edge.shape, edge.to);
+    if !edge.label.is_empty() {
+        text.push(' ');
+        text.push_str(&edge.label);
+    }
+    text
 }
 
 fn arc_shape(
@@ -686,7 +748,7 @@ fn arc_shape(
     y2: f64,
     labeled: bool,
     scheme: &Scheme,
-) -> (String, String, f64, f64) {
+) -> Result<(String, String, f64, f64), ()> {
     let dx = x2 - x1;
     let dy = y2 - y1;
     let mut lx = (x1 + x2) / 2.0;
@@ -817,12 +879,9 @@ fn arc_shape(
                 scheme.bracket
             ),
         ),
-        _ => (
-            straight,
-            format!("fill:none;stroke:{};stroke-width:1", scheme.fault),
-        ),
+        _ => return Err(()),
     };
-    (d, style, lx, ly)
+    Ok((d, style, lx, ly))
 }
 
 fn append_num(s: &mut String, n: f64) {

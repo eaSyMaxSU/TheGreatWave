@@ -79,6 +79,7 @@ const SNAPSHOTS: &[&str] = &[
     "paths",
     "empty",
     "groups",
+    "names",
 ];
 
 #[test]
