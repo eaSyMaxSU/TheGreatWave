@@ -71,11 +71,9 @@ The saved SVG stays compact: a long clock is one pattern, and an unknown value i
 | `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, no GUI libraries |
 | `cargo build --release --no-default-features` | Renderer only, no dependencies |
 
-`tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler CI uses. A program that only renders can depend on the library with `default-features = false`.
+`tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler. A program that only renders can depend on the library with `default-features = false`.
 
 ## Platforms
-
-CI builds and tests macOS, Windows, and Linux on every push.
 
 - **macOS.** The Dock shows the tgw icon while a window is open.
 - **Windows.** The icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the Visual Studio resource compiler, or `windres` for the GNU toolchain. Without one, the build warns and continues. CRLF sources render the same picture as LF. A sharing or lock violation while an editor is still saving is treated as transient, and the next poll reads the finished file.
@@ -215,7 +213,7 @@ cargo doc --locked --no-deps
 cargo build --locked --release
 ```
 
-The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. CI runs this set on macOS, Windows, and Linux against `Cargo.lock`, with warnings denied. On Linux the window runs under Xvfb.
+The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release.
 
 `tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
 
