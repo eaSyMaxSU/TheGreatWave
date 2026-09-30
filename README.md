@@ -57,11 +57,11 @@ The output is the same bytes as a one-off render with the same `--indent` and `-
 
 A syntax error, a missing file, or a write that fails leaves the last good picture in place. A diagram error is reported as `path:line:col: message`. A write error is the operating-system error. The window shows it in the status bar; `--watch` prints it on stderr. A failed write is tried again at the next poll. Ctrl-W or Ctrl-Q closes the window (Command on macOS). `--watch` stops on Ctrl-C.
 
-In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. Use the trackpad or a scrollbar; hold Shift to scroll sideways. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
+In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. Use the wheel or trackpad, and hold Shift to scroll sideways. Drag a scrollbar thumb, or click the track to move by most of the view. Bars appear only when the diagram overflows. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
 
 The window follows the system appearance. Default light is the palette written into the SVG. Default dark draws the same diagram in a dark palette. Ctrl-Shift-L (Command-Shift-L on macOS) switches between them and keeps the choice. The saved file stays on the light palette.
 
-The saved SVG stays compact: a long clock is one pattern. The window paints only the visible slice, repeating that pattern as strokes across the part on screen.
+The saved SVG stays compact: a long clock is one pattern, and an unknown value is a small hatch pattern. The window paints only the visible slice. It repeats a clock or the grid as strokes. An unknown hatch is a set of continuous slashes, carried through a bus transition, so the marks meet from one side to the other. A bus fill overlaps the edge it shares with that transition, covering the page along the seam.
 
 ## Builds
 
@@ -197,7 +197,7 @@ let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 # Ok::<(), tgw::Error>(())
 ```
 
-`render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
+`render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_with_format` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
 ## Checks
 
