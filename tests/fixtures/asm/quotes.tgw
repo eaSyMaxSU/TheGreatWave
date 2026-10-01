@@ -1,0 +1,4 @@
+@asm
+"go on":
+  "a:b"
+  > "go on"

@@ -27,6 +27,8 @@ pub(crate) struct Frame {
     pub(crate) y0: f32,
     pub(crate) x1: f32,
     pub(crate) y1: f32,
+    /// An ASM chart scrolls as one picture. Timing diagrams keep a name column.
+    pub(crate) unified: bool,
 }
 
 #[cfg(test)]
@@ -39,6 +41,7 @@ pub(crate) fn full_frame(width: f32, height: f32, gutter: f32) -> Frame {
         y0: 0.0,
         x1: width,
         y1: height,
+        unified: false,
     }
 }
 
@@ -68,6 +71,8 @@ pub(crate) struct ViewLayout {
 
 pub(crate) fn diagram_frame(svg: &str) -> Option<Frame> {
     let (width, height) = svg_size(svg)?;
+    let root_end = svg.find('>')?;
+    let unified = svg[..root_end].contains("class=\"tgw asm\"");
     let defs = svg.find("</defs>")?;
     let rest = &svg[defs..];
     let key = "transform=\"translate(";
@@ -89,6 +94,7 @@ pub(crate) fn diagram_frame(svg: &str) -> Option<Frame> {
         y0,
         x1,
         y1,
+        unified,
     })
 }
 
@@ -266,6 +272,18 @@ fn choose_scale(svg_w: f32, svg_h: f32, avail_w: f32, avail_h: f32) -> f32 {
     1.0
 }
 
+fn choose_asm_scale(svg_w: f32, svg_h: f32, avail_w: f32, avail_h: f32) -> f32 {
+    if svg_w <= 0.0 || svg_h <= 0.0 {
+        return 1.0;
+    }
+    let fit = (avail_w / svg_w).min(avail_h / svg_h);
+    if fit >= 1.0 {
+        fit.floor().max(1.0)
+    } else {
+        1.0
+    }
+}
+
 /// Names end 10px left of the plot origin, and that origin is half a pixel past
 /// the gutter. The split sits 2px to the right of the names, so the tick mark
 /// centered on the origin — including its `0` — is entirely in the wave pane.
@@ -300,7 +318,11 @@ pub(crate) fn layout_diagram(
     let y0 = frame.y0.clamp(0.0, frame.height);
     let x1 = frame.x1.clamp(x0 + 1.0, frame.width.max(x0 + 1.0));
     let y1 = frame.y1.clamp(y0 + 1.0, frame.height.max(y0 + 1.0));
-    let seam = column_seam(frame.gutter).clamp(x0, x1);
+    let seam = if frame.unified {
+        x0
+    } else {
+        column_seam(frame.gutter).clamp(x0, x1)
+    };
     let label_span = (seam - x0).max(0.0);
     let wave_span = (x1 - seam).max(1.0);
     let content_w = (label_span + wave_span).max(1.0);
@@ -316,7 +338,11 @@ pub(crate) fn layout_diagram(
     for _ in 0..4 {
         let inner_w = (view_w - edge_x * 2.0 - if show_v { SCROLLBAR } else { 0.0 }).max(1.0);
         let inner_h = (view_h - edge_y * 2.0 - if show_h { SCROLLBAR } else { 0.0 }).max(1.0);
-        scale = choose_scale(content_w, content_h, inner_w, inner_h);
+        scale = if frame.unified {
+            choose_asm_scale(content_w, content_h, inner_w, inner_h)
+        } else {
+            choose_scale(content_w, content_h, inner_w, inner_h)
+        };
         let natural = label_span * scale;
         label_w = if natural + 64.0 <= inner_w {
             natural
@@ -325,8 +351,12 @@ pub(crate) fn layout_diagram(
         };
         let wave_px = wave_span * scale;
         let height_px = content_h * scale;
-        let next_h = wave_px > (inner_w - label_w) + 1.0;
-        let next_v = height_px > inner_h + 1.0;
+        let mut next_h = wave_px > (inner_w - label_w) + 1.0;
+        let mut next_v = height_px > inner_h + 1.0;
+        if frame.unified && (next_h || next_v) {
+            next_h = true;
+            next_v = true;
+        }
         wave_w = if next_h {
             (inner_w - label_w).max(1.0)
         } else {
@@ -601,5 +631,30 @@ mod tests {
         assert!(dark.contains("fill=\"#10151f\""));
         assert!(!dark.contains("#fff"));
         assert!(!dark.contains("#0041c4"));
+    }
+
+    #[test]
+    fn asm_chart_scrolls_as_one_picture() {
+        let svg = tgw::render(include_str!("../examples/asm.tgw")).unwrap();
+        let frame = diagram_frame(&svg).unwrap();
+        assert!(frame.unified);
+        let fitted = layout_diagram(&frame, 2000.0, 1600.0, 0.0, 0.0).unwrap();
+        assert_eq!(fitted.label_w, 0.0);
+        assert!(fitted.scale >= 1.0);
+        assert_eq!(fitted.scale.fract(), 0.0);
+        assert!(!fitted.show_h && !fitted.show_v);
+        let whole = slice_svg(
+            &svg,
+            fitted.wave.x,
+            fitted.wave.y,
+            fitted.wave.w,
+            fitted.wave.h,
+        )
+        .unwrap();
+        assert!(whole.contains(">idle</text>"));
+        assert!(whole.contains("<polygon"));
+        let tight = layout_diagram(&frame, 120.0, 80.0, 0.0, 0.0).unwrap();
+        assert!((tight.scale - 1.0).abs() < 0.01);
+        assert!(tight.show_h && tight.show_v);
     }
 }

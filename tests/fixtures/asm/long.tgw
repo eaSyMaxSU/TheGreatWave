@@ -1,0 +1,8 @@
+@asm
+@title Long labels
+s:
+  ? ready and acknowledged
+    0 s
+    1 t
+t:
+  the output value is a whole sentence

@@ -1,0 +1,8 @@
+@asm
+s:
+  ? outer
+    0 ? inner
+      0 s
+      1 t
+    1 t
+t:

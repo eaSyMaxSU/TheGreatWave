@@ -1,4 +1,4 @@
-//! The Great Wave renders native `.tgw` and WaveJSON timing diagrams to SVG.
+//! The Great Wave renders native `.tgw` timing diagrams, ASM charts, and WaveJSON to SVG.
 //!
 //! Copyright (c) 2026 eaSyMaxSU. Licensed under the MIT License; see `LICENSE`.
 //!
@@ -10,6 +10,9 @@
 //! SVG arc geometry: <https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes>.
 #![forbid(unsafe_code)]
 
+mod asm;
+mod asm_emit;
+mod asm_layout;
 mod emit;
 mod format;
 mod geom;
@@ -73,7 +76,12 @@ pub enum InputFormat {
     Json5,
 }
 
-fn parse(source: &str, format: InputFormat) -> Result<scan::Doc, Error> {
+enum Picture {
+    Wave(Box<scan::Doc>),
+    Asm(Box<asm::Chart>),
+}
+
+fn parse(source: &str, format: InputFormat) -> Result<Picture, Error> {
     let trimmed = source.trim_start_matches('\u{feff}').trim_start();
     let json = match format {
         InputFormat::Auto => {
@@ -87,7 +95,7 @@ fn parse(source: &str, format: InputFormat) -> Result<scan::Doc, Error> {
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
     if json {
         match scan::parse(source) {
-            Ok(doc) => Ok(doc),
+            Ok(doc) => Ok(Picture::Wave(Box::new(doc))),
             Err(error)
                 if matches!(format, InputFormat::Auto)
                     && (trimmed.starts_with("//") || trimmed.starts_with("/*")) =>
@@ -99,8 +107,10 @@ fn parse(source: &str, format: InputFormat) -> Result<scan::Doc, Error> {
             }
             Err(error) => Err(error),
         }
+    } else if asm::starts_with_asm(source) {
+        asm::parse(source).map(|chart| Picture::Asm(Box::new(chart)))
     } else {
-        native::parse(source)
+        native::parse(source).map(|doc| Picture::Wave(Box::new(doc)))
     }
 }
 
@@ -112,8 +122,7 @@ pub fn render_with_format(
     format: InputFormat,
 ) -> Result<(), Error> {
     out.clear();
-    let doc = parse(source, format)?;
-    if let Err(e) = emit::write(&doc, out, indent) {
+    if let Err(e) = write_picture(&parse(source, format)?, out, indent, &scheme::LIGHT) {
         out.clear();
         return Err(e);
     }
@@ -130,12 +139,23 @@ pub fn render_themed(
     scheme: &'static scheme::Scheme,
 ) -> Result<(), Error> {
     out.clear();
-    let doc = parse(source, format)?;
-    if let Err(e) = emit::write_themed(&doc, out, indent, scheme) {
+    if let Err(e) = write_picture(&parse(source, format)?, out, indent, scheme) {
         out.clear();
         return Err(e);
     }
     Ok(())
+}
+
+fn write_picture(
+    picture: &Picture,
+    out: &mut Vec<u8>,
+    indent: u8,
+    scheme: &'static scheme::Scheme,
+) -> Result<(), Error> {
+    match picture {
+        Picture::Wave(doc) => emit::write_themed(doc, out, indent, scheme),
+        Picture::Asm(chart) => asm_emit::write(chart, out, indent, scheme),
+    }
 }
 
 /// Convert JSON5 or native text to canonical, human-readable `.tgw` syntax.
@@ -145,7 +165,10 @@ pub fn to_tgw(source: &str) -> Result<String, Error> {
 
 /// Convert a source with explicitly selected input syntax to `.tgw`.
 pub fn to_tgw_with_format(source: &str, format: InputFormat) -> Result<String, Error> {
-    Ok(crate::format::write(&parse(source, format)?))
+    Ok(match parse(source, format)? {
+        Picture::Wave(doc) => crate::format::write(&doc),
+        Picture::Asm(chart) => crate::asm::write(&chart),
+    })
 }
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

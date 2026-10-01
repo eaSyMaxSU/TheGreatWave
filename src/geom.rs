@@ -21,6 +21,9 @@ pub(crate) struct Paint {
     clock_ids: HashMap<ClockKey, usize>,
     pub hatch: bool,
     pub scheme: &'static Scheme,
+    /// Solid or dashed subpaths waiting to share one `<path>`.
+    pending: Vec<u8>,
+    pending_dash: Option<bool>,
 }
 
 impl Paint {
@@ -36,8 +39,34 @@ impl Paint {
             clock_ids: HashMap::new(),
             hatch: false,
             scheme,
+            pending: Vec::new(),
+            pending_dash: None,
         }
     }
+}
+
+fn flush_pending(paint: &mut Paint) {
+    let Some(dash) = paint.pending_dash.take() else {
+        return;
+    };
+    if paint.pending.is_empty() {
+        return;
+    }
+    paint.body.extend_from_slice(b"<path d=\"");
+    paint.body.append(&mut paint.pending);
+    paint.body.push(b'"');
+    if dash {
+        paint.body.extend_from_slice(b" stroke-dasharray=\"1,3\"");
+    }
+    paint.body.extend_from_slice(b"/>");
+}
+
+fn stroke(paint: &mut Paint, dash: bool, draw: impl FnOnce(&mut Vec<u8>)) {
+    if paint.pending_dash != Some(dash) {
+        flush_pending(paint);
+        paint.pending_dash = Some(dash);
+    }
+    draw(&mut paint.pending);
 }
 
 pub(crate) fn paint_wave(paint: &mut Paint, pats: &[Pat], skip: i64, end: i64) {
@@ -96,6 +125,7 @@ pub(crate) fn paint_wave(paint: &mut Paint, pats: &[Pat], skip: i64, end: i64) {
             }
         }
     }
+    flush_pending(paint);
     paint.body.extend_from_slice(b"</g>");
 }
 
@@ -141,13 +171,7 @@ fn draw_clock(
     // the initial edge or painting an edge belonging to the *next* cycle.
     const PAD: i64 = 4;
     if at >= skip {
-        clock_edge(
-            &mut paint.body,
-            s0,
-            x_start,
-            x_start + PAD,
-            paint.scheme.ink,
-        );
+        clock_edge(paint, s0, x_start, x_start + PAD);
     }
     let left = (x_start + PAD).max(0);
     let complete = at + total <= end;
@@ -159,6 +183,7 @@ fn draw_clock(
     } else {
         x_start
     };
+    flush_pending(paint);
     paint.body.extend_from_slice(b"<g transform=\"translate(");
     push_i64(&mut paint.body, origin);
     paint.body.extend_from_slice(b")\"><rect x=\"");
@@ -185,11 +210,12 @@ fn draw_span(paint: &mut Paint, code: Code, x: i64, w: i64) {
         Code::Mid => hline(paint, x, w, YS / 2, false),
         Code::X => {
             paint.hatch = true;
-            rect(&mut paint.body, x, 0, w, YS, "url(#xh)");
+            rect(paint, x, 0, w, YS, "url(#xh)");
             rails(paint, x, w);
         }
         Code::Bus(n) => {
-            rect(&mut paint.body, x, 0, w, YS, paint.scheme.bus(n));
+            let fill = paint.scheme.bus(n);
+            rect(paint, x, 0, w, YS, fill);
             rails(paint, x, w);
         }
         other => draw_one(paint, other, x),
@@ -214,7 +240,7 @@ fn edge(paint: &mut Paint, x: i64, rise: bool, arrow: bool) {
         (false, true) => Code::FallA,
         (false, false) => Code::Fall,
     };
-    clock_edge(&mut paint.body, code, x, x + XS, paint.scheme.ink);
+    clock_edge(paint, code, x, x + XS);
 }
 
 fn draw_soft(paint: &mut Paint, prev: u8, next: u8, x: i64) {
@@ -281,6 +307,7 @@ fn end_kind(c: u8) -> End {
 // A transition occupies x+3..x+9, with its crossing at x+6. Keeping the
 // same crossing for every state makes bus labels and timing nodes line up.
 fn band_band(paint: &mut Paint, x: i64, fill1: &str, fill2: &str) {
+    flush_pending(paint);
     open(&mut paint.body);
     cmd_m(&mut paint.body, x, 0);
     cmd_l(&mut paint.body, x + 3, 0);
@@ -295,19 +322,20 @@ fn band_band(paint: &mut Paint, x: i64, fill1: &str, fill2: &str) {
     cmd_l(&mut paint.body, x + 9, YS);
     cmd_l(&mut paint.body, x + XS, YS);
     close_fill(&mut paint.body, fill2);
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, 0);
-    cmd_l(&mut paint.body, x + 3, 0);
-    cmd_l(&mut paint.body, x + 9, YS);
-    cmd_l(&mut paint.body, x + XS, YS);
-    cmd_m(&mut paint.body, x, YS);
-    cmd_l(&mut paint.body, x + 3, YS);
-    cmd_l(&mut paint.body, x + 9, 0);
-    cmd_l(&mut paint.body, x + XS, 0);
-    close_stroke(&mut paint.body, false);
+    stroke(paint, false, |body| {
+        cmd_m(body, x, 0);
+        cmd_l(body, x + 3, 0);
+        cmd_l(body, x + 9, YS);
+        cmd_l(body, x + XS, YS);
+        cmd_m(body, x, YS);
+        cmd_l(body, x + 3, YS);
+        cmd_l(body, x + 9, 0);
+        cmd_l(body, x + XS, 0);
+    });
 }
 
 fn line_band(paint: &mut Paint, x: i64, y: i64, dash: bool, fill: &str) {
+    flush_pending(paint);
     open(&mut paint.body);
     cmd_m(&mut paint.body, x + 3, y);
     cmd_l(&mut paint.body, x + 9, 0);
@@ -317,16 +345,17 @@ fn line_band(paint: &mut Paint, x: i64, y: i64, dash: bool, fill: &str) {
     paint.body.push(b'Z');
     close_fill(&mut paint.body, fill);
     hline(paint, x, 3, y, dash);
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x + XS, 0);
-    cmd_l(&mut paint.body, x + 9, 0);
-    cmd_l(&mut paint.body, x + 3, y);
-    cmd_l(&mut paint.body, x + 9, YS);
-    cmd_h(&mut paint.body, x + XS);
-    close_stroke(&mut paint.body, false);
+    stroke(paint, false, |body| {
+        cmd_m(body, x + XS, 0);
+        cmd_l(body, x + 9, 0);
+        cmd_l(body, x + 3, y);
+        cmd_l(body, x + 9, YS);
+        cmd_h(body, x + XS);
+    });
 }
 
 fn band_line(paint: &mut Paint, x: i64, fill: &str, y: i64, dash: bool) {
+    flush_pending(paint);
     open(&mut paint.body);
     cmd_m(&mut paint.body, x, 0);
     cmd_l(&mut paint.body, x + 3, 0);
@@ -335,50 +364,50 @@ fn band_line(paint: &mut Paint, x: i64, fill: &str, y: i64, dash: bool) {
     cmd_l(&mut paint.body, x, YS);
     paint.body.push(b'Z');
     close_fill(&mut paint.body, fill);
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, 0);
-    cmd_l(&mut paint.body, x + 3, 0);
-    cmd_l(&mut paint.body, x + 9, y);
-    cmd_l(&mut paint.body, x + 3, YS);
-    cmd_h(&mut paint.body, x);
-    close_stroke(&mut paint.body, false);
+    stroke(paint, false, |body| {
+        cmd_m(body, x, 0);
+        cmd_l(body, x + 3, 0);
+        cmd_l(body, x + 9, y);
+        cmd_l(body, x + 3, YS);
+        cmd_h(body, x);
+    });
     hline(paint, x + 9, XS - 9, y, dash);
 }
 
 fn slope(paint: &mut Paint, x: i64, y1: i64, y2: i64, dash: bool) {
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, y1);
-    cmd_l(&mut paint.body, x + 3, y1);
-    cmd_l(&mut paint.body, x + 9, y2);
-    cmd_h(&mut paint.body, x + XS);
-    close_stroke(&mut paint.body, dash);
+    stroke(paint, dash, |body| {
+        cmd_m(body, x, y1);
+        cmd_l(body, x + 3, y1);
+        cmd_l(body, x + 9, y2);
+        cmd_h(body, x + XS);
+    });
 }
 
 fn bump(paint: &mut Paint, x: i64, y: i64) {
     let mid = if y == 0 { 10 } else { y - 10 };
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, y);
-    cmd_l(&mut paint.body, x + 3, y);
-    cmd_l(&mut paint.body, x + 6, mid);
-    cmd_l(&mut paint.body, x + 9, y);
-    cmd_h(&mut paint.body, x + XS);
-    close_stroke(&mut paint.body, false);
+    stroke(paint, false, |body| {
+        cmd_m(body, x, y);
+        cmd_l(body, x + 3, y);
+        cmd_l(body, x + 6, mid);
+        cmd_l(body, x + 9, y);
+        cmd_h(body, x + XS);
+    });
 }
 
 fn hline(paint: &mut Paint, x: i64, w: i64, y: i64, dash: bool) {
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, y);
-    cmd_h(&mut paint.body, x + w);
-    close_stroke(&mut paint.body, dash);
+    stroke(paint, dash, |body| {
+        cmd_m(body, x, y);
+        cmd_h(body, x + w);
+    });
 }
 
 fn rails(paint: &mut Paint, x: i64, w: i64) {
-    open(&mut paint.body);
-    cmd_m(&mut paint.body, x, 0);
-    cmd_h(&mut paint.body, x + w);
-    cmd_m(&mut paint.body, x, YS);
-    cmd_h(&mut paint.body, x + w);
-    close_stroke(&mut paint.body, false);
+    stroke(paint, false, |body| {
+        cmd_m(body, x, 0);
+        cmd_h(body, x + w);
+        cmd_m(body, x, YS);
+        cmd_h(body, x + w);
+    });
 }
 
 fn arrow_at(body: &mut Vec<u8>, x: i64, rise: bool, ink: &str) {
@@ -437,12 +466,17 @@ pub(crate) fn write_clock_pattern(body: &mut Vec<u8>, id: usize, key: &ClockKey,
     body.extend_from_slice(b"</pattern>");
 }
 
-fn clock_edge(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64, ink: &str) {
-    open(body);
-    edge_d(body, code, x0, x1);
-    close_stroke(body, matches!(code, Code::DashH | Code::DashL));
+fn clock_edge(paint: &mut Paint, code: Code, x0: i64, x1: i64) {
+    let dash = matches!(code, Code::DashH | Code::DashL);
+    stroke(paint, dash, |body| edge_d(body, code, x0, x1));
     if matches!(code, Code::RiseA | Code::FallA) {
-        arrow_at(body, x0, matches!(code, Code::RiseA), ink);
+        flush_pending(paint);
+        arrow_at(
+            &mut paint.body,
+            x0,
+            matches!(code, Code::RiseA),
+            paint.scheme.ink,
+        );
     }
 }
 
@@ -473,7 +507,9 @@ fn edge_d(body: &mut Vec<u8>, code: Code, x0: i64, x1: i64) {
     }
 }
 
-fn rect(body: &mut Vec<u8>, x: i64, y: i64, w: i64, h: i64, fill: &str) {
+fn rect(paint: &mut Paint, x: i64, y: i64, w: i64, h: i64, fill: &str) {
+    flush_pending(paint);
+    let body = &mut paint.body;
     body.extend_from_slice(b"<rect x=\"");
     push_i64(body, x);
     body.extend_from_slice(b"\" y=\"");
@@ -542,6 +578,7 @@ mod tests {
         for (prev, next) in [(b'x', b'3'), (b'3', b'x')] {
             let mut paint = Paint::new();
             draw_soft(&mut paint, prev, next, 40);
+            flush_pending(&mut paint);
             let svg = body(&paint);
             assert!(
                 paint.hatch,
@@ -560,11 +597,13 @@ mod tests {
         for (code, y) in [(b'0', YS), (b'1', 0), (b'z', YS / 2)] {
             let mut paint = Paint::new();
             draw_soft(&mut paint, b'3', code, 0);
+            flush_pending(&mut paint);
             assert!(body(&paint).contains(&format!("M0 0L3 0L9 {y}L3 20H0")));
             assert!(body(&paint).contains(&format!("M9 {y}H20")));
 
             let mut paint = Paint::new();
             draw_soft(&mut paint, code, b'3', 0);
+            flush_pending(&mut paint);
             assert!(body(&paint).contains(&format!("M20 0L9 0L3 {y}L9 20H20")));
             assert!(body(&paint).contains(&format!("M0 {y}H3")));
         }
@@ -630,5 +669,16 @@ mod tests {
         assert!(svg.contains("M-3 12L0 3L3 12Z"));
         assert!(svg.contains("M-4 20H0M0 20V0H20M20 0V20H36"));
         assert!(!svg.contains("overflow="));
+    }
+
+    #[test]
+    fn toggling_levels_share_one_stroke_path() {
+        let wave = crate::wave::compile("010101", 1.0, 1, 0.0).unwrap();
+        let mut paint = Paint::new();
+        paint_wave(&mut paint, &wave.pats, 0, i64::MAX);
+        let svg = body(&paint);
+        assert_eq!(svg.matches("<path ").count(), 1, "{svg}");
+        assert!(svg.contains("M0 20H40M40 20L43 20L49 0H60"), "{svg}");
+        assert!(svg.contains("M80 0L83 0L89 20H100"), "{svg}");
     }
 }

@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use tgw::InputFormat;
 
+#[cfg(all(test, feature = "view"))]
+mod asm_pixels;
 #[cfg(feature = "view")]
 mod layout;
 #[cfg(feature = "watch")]
@@ -72,6 +74,8 @@ Language:
   An uppercase letter is a node with no label. [setup] is one cycle with a word.
   @edge setup~>hold \"tSU\" draws an arrow between two nodes.
   A missing node or an unknown connector is an error.
+  A file that starts with @asm is an ASM chart. Indent matters only there.
+  0 continues down and 1 leaves to the right.
 ";
 
 #[derive(Debug, PartialEq, Eq)]

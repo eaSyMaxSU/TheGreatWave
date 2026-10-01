@@ -47,6 +47,7 @@ WaveJSON and JSON5 still render. The syntax is detected automatically, or chosen
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --view   # window and file
 ./target/release/tgw examples/transfer.tgw --view                   # window only
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only
+./target/release/tgw examples/asm.tgw --view                        # an ASM chart, same window
 ```
 
 `--view` opens a window. `--watch` does not. Both keep running, and every save of the input refreshes the picture. With `-o`, the file is refreshed too.
@@ -57,7 +58,7 @@ The output is the same bytes as a one-off render with the same `--indent` and `-
 
 A syntax error, a missing file, or a write that fails leaves the last good picture in place. A diagram error is reported as `path:line:col: message`. A write error is the operating-system error. The window shows it in the status bar; `--watch` prints it on stderr. A failed write is tried again at the next poll. Ctrl-W or Ctrl-Q closes the window (Command on macOS). `--watch` stops on Ctrl-C.
 
-In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. Use the wheel or trackpad, and hold Shift to scroll sideways. Drag a scrollbar thumb, or click the track to move by most of the view. Bars appear only when the diagram overflows. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
+In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. An `@asm` chart is the same window with no name column: the whole picture scrolls, and both bars appear when it does not fit. Use the wheel or trackpad, and hold Shift to scroll sideways. Drag a scrollbar thumb, or click the track to move by most of the view. Bars appear only when the diagram overflows. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
 
 The window follows the system appearance. Default light is the palette written into the SVG. Default dark draws the same diagram in a dark palette. Ctrl-Shift-L (Command-Shift-L on macOS) switches between them and keeps the choice. The saved file stays on the light palette.
 
@@ -174,6 +175,32 @@ analog: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 A0.5,0.5 0 0 1 4,1 L5,0
 ```
 
 Register and assign diagrams are not supported. JSON5 input accepts the subset usual for these diagrams: bare or quoted keys, either quote style, comments, trailing commas, arrays, objects, finite numbers, booleans, and null.
+
+A file whose first directive is `@asm` is an algorithmic state machine chart. Every other file stays a timing diagram. Indentation matters only after `@asm`. `#` comments, `@title`, and `@footer` work as they do above. `--convert` reprints the chart at a 2-space indent.
+
+```text
+@asm
+@title Bus handshake
+
+idle:
+  req=0
+  ack=0
+  ? start
+    0 idle
+    1 (req=1) wait
+
+wait:
+  ack=1
+  ? done
+    0 wait
+    1 idle
+```
+
+`name:` opens a state. Later lines that are not `?` or `>` are outputs, one line each. `? condition` is a decision with exits `0` and `1`, in either order. `1 (req=1) wait` draws a conditional-output box on that exit, then links to `wait`. `> next` is an unconditional exit. A state with no exit is terminal. An exit may be a nested `?` instead of a state name.
+
+Inside a block, `0` continues down and `1` leaves to the right. Blocks stack in source order. A link into the block directly below is a straight arrow. Any other link runs in a side channel: forward on the right, back on the left. The text does not carry coordinates.
+
+The window shows the chart as one picture, with no name column. When the chart fits, it is scaled by a whole number so each SVG pixel stays a whole device pixel. When it does not fit, the scale stays 1 and both scrollbars appear.
 
 ## Picture
 

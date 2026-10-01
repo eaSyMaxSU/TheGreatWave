@@ -1,0 +1,6 @@
+@asm
+idle:
+  ? go
+    0 idle
+    1 (req = 1) wait
+wait:

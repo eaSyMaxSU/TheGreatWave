@@ -408,7 +408,7 @@ fn tick(s: &str, at: usize) -> Result<Tick, Error> {
 }
 
 // All separators/comments are recognized outside quoted strings only.
-fn split_comment(s: &str, at: usize) -> Result<(&str, Option<String>), Error> {
+pub(crate) fn split_comment(s: &str, at: usize) -> Result<(&str, Option<String>), Error> {
     let hash = if !s.contains('\'') && !s.contains('"') {
         s.find('#')
     } else {
@@ -502,7 +502,7 @@ fn split_outside(s: &str, separator: char) -> impl Iterator<Item = &str> {
         }
     })
 }
-fn text(s: &str, at: usize) -> Result<String, Error> {
+pub(crate) fn text(s: &str, at: usize) -> Result<String, Error> {
     if s.starts_with(['\'', '"']) {
         let parts = tokens(s, at)?;
         if parts.len() != 1 {
@@ -513,7 +513,7 @@ fn text(s: &str, at: usize) -> Result<String, Error> {
         Ok(s.to_string())
     }
 }
-fn tokens(s: &str, at: usize) -> Result<Vec<Cow<'_, str>>, Error> {
+pub(crate) fn tokens(s: &str, at: usize) -> Result<Vec<Cow<'_, str>>, Error> {
     let mut result = Vec::new();
     let mut i = 0;
     while i < s.len() {

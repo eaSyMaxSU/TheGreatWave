@@ -164,6 +164,7 @@ fn follow_edge_cases(name: &str, mode: &str) {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let names = [
         "alphabet", "ticks", "spans", "markup", "unicode", "crop", "paths", "empty", "groups",
+        "asm",
     ];
     let sources: Vec<String> = names
         .iter()

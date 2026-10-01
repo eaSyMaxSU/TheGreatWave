@@ -1,0 +1,4 @@
+@asm
+@title Halt
+done:
+  halt

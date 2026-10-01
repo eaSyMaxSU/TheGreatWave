@@ -80,6 +80,7 @@ const SNAPSHOTS: &[&str] = &[
     "empty",
     "groups",
     "names",
+    "asm",
 ];
 
 #[test]
@@ -385,6 +386,193 @@ fn errors_clear_reused_output_and_do_not_panic() {
         assert!(out.is_empty());
         out.extend_from_slice(b"reuse");
     }
+}
+
+#[test]
+fn asm_chart_round_trips_and_stays_on_the_pixel_grid() {
+    let source = fixture("asm");
+    let svg = tgw::render(&source).unwrap();
+    assert!(svg.contains("class=\"tgw asm\""));
+    assert!(svg.contains(">idle</text>"));
+    assert!(svg.contains(">req=1</text>"));
+    assert!(svg.contains("<polygon"));
+    assert!(!svg.contains("<g><rect"));
+    let converted = tgw::to_tgw(&source).unwrap();
+    assert_eq!(tgw::render(&converted).unwrap(), svg);
+    assert_eq!(tgw::to_tgw(&converted).unwrap(), converted);
+    for tag in svg.split("<rect ").skip(1) {
+        let tag = tag.split('>').next().unwrap();
+        for key in ["x=\"", "y=\"", "width=\"", "height=\""] {
+            let Some(rest) = tag.split(key).nth(1) else {
+                continue;
+            };
+            let num = rest.split('"').next().unwrap();
+            assert!(num.parse::<i64>().is_ok(), "{key}{num}");
+        }
+    }
+    let mut dark = Vec::new();
+    tgw::render_themed(
+        &source,
+        &mut dark,
+        0,
+        tgw::InputFormat::Tgw,
+        &tgw::scheme::DARK,
+    )
+    .unwrap();
+    let dark = String::from_utf8(dark).unwrap();
+    assert!(dark.contains(tgw::scheme::DARK.ink));
+    assert!(dark.contains(tgw::scheme::DARK.paper));
+    assert!(dark.contains("class=\"tgw asm\""));
+}
+
+#[test]
+fn asm_edge_cases_render_and_round_trip() {
+    let dir = root().join("tests/fixtures/asm");
+    let mut paths: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tgw"))
+        .collect();
+    paths.sort();
+    assert!(paths.len() >= 18, "{paths:?}");
+    let spine = fs::read_to_string(dir.join("spine.tgw")).unwrap();
+    let spine_svg = tgw::render(&spine).unwrap();
+    for path in &paths {
+        let source = fs::read_to_string(path).unwrap();
+        let name = path.file_stem().unwrap().to_string_lossy();
+        let svg = tgw::render(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(svg.contains("class=\"tgw asm\""), "{name}");
+        assert!(!svg.contains("<g><rect"), "{name} label pill");
+        assert_integer_geometry(&svg, &name);
+        let converted = tgw::to_tgw(&source).unwrap();
+        assert_eq!(tgw::render(&converted).unwrap(), svg, "{name} convert");
+        assert_eq!(tgw::to_tgw(&converted).unwrap(), converted, "{name} stable");
+        let crlf = source.replace('\n', "\r\n");
+        assert_eq!(tgw::render(&crlf).unwrap(), svg, "{name} crlf");
+        let mut dark = Vec::new();
+        tgw::render_themed(
+            &source,
+            &mut dark,
+            0,
+            tgw::InputFormat::Tgw,
+            &tgw::scheme::DARK,
+        )
+        .unwrap();
+        let dark = String::from_utf8(dark).unwrap();
+        if svg.contains("\"#000\"") {
+            assert!(dark.contains(tgw::scheme::DARK.ink), "{name}");
+        }
+        assert!(dark.contains(tgw::scheme::DARK.paper), "{name}");
+        assert_eq!(
+            dark.matches("<rect ").count(),
+            svg.matches("<rect ").count(),
+            "{name} dark geometry"
+        );
+    }
+    assert_eq!(
+        tgw::render(&fs::read_to_string(dir.join("comments.tgw")).unwrap()).unwrap(),
+        spine_svg
+    );
+    let canonical = "\
+@asm
+
+a:
+  ? q
+    0 a
+    1 b
+
+b:
+";
+    assert_eq!(
+        tgw::render(&fs::read_to_string(dir.join("wide.tgw")).unwrap()).unwrap(),
+        tgw::render(canonical).unwrap()
+    );
+}
+
+fn assert_integer_geometry(svg: &str, name: &str) {
+    for tag in svg.split("<rect ").skip(1) {
+        let tag = tag.split('>').next().unwrap();
+        for key in ["x=\"", "y=\"", "width=\"", "height=\""] {
+            let Some(rest) = tag.split(key).nth(1) else {
+                continue;
+            };
+            let num = rest.split('"').next().unwrap();
+            assert!(num.parse::<i64>().is_ok(), "{name} {key}{num}");
+        }
+    }
+    for tag in svg.split("<polygon ").skip(1) {
+        let tag = tag.split('>').next().unwrap();
+        let Some(points) = tag.split("points=\"").nth(1) else {
+            continue;
+        };
+        let points = points.split('"').next().unwrap();
+        for pair in points.split_whitespace() {
+            for num in pair.split(',') {
+                assert!(num.parse::<i64>().is_ok(), "{name} point {num}");
+            }
+        }
+    }
+}
+
+#[test]
+fn asm_edge_cases_are_errors() {
+    let cases = [
+        ("@asm extra\n", "@asm takes no arguments"),
+        ("@asm\n  s:\n", "beginning of the line"),
+        ("@asm\n@end\n", "@end is not used"),
+        ("@asm\n@nope\n", "unknown directive"),
+        ("@asm\na:\n@title later\n", "directives belong before"),
+        (
+            "@asm\na:\n  out\n  > a\n  more\n",
+            "Moore outputs come before",
+        ),
+        ("@asm\na:\n  > b\n  > a\n", "one exit"),
+        ("@asm\ngo on:\n", "must be quoted"),
+        ("@asm\na:\n  ? q\n    0 a\n", "exits 0 and 1"),
+        ("@asm\na:\n  ? q\n    0 a\n    1 a\n    0 a\n", "extra exit"),
+        ("@asm\na:\n  > missing\nb:\n", "states are a, b"),
+        ("@asm\na:\n  > a\na:\n", "duplicate state"),
+    ];
+    for (source, needle) in cases {
+        let error = tgw::render(source).unwrap_err();
+        assert!(
+            error.message.contains(needle),
+            "{source:?} -> {}",
+            error.message
+        );
+        assert!(error.offset <= source.len(), "{source:?}");
+    }
+
+    let mut deep = String::from("@asm\ns:\n  ? a\n");
+    let mut pad = String::from("    ");
+    for level in 0..33 {
+        if level > 0 {
+            deep.push_str(&pad);
+            deep.push_str("0 ? a\n");
+            pad.push_str("  ");
+        }
+    }
+    deep.push_str(&pad);
+    deep.push_str("0 s\n");
+    deep.push_str(&pad);
+    deep.push_str("1 s\n");
+    let error = tgw::render(&deep).unwrap_err();
+    assert!(error.message.contains("32"), "{}", error.message);
+
+    let mut many = String::from("@asm\n");
+    for i in 0..=256 {
+        many.push_str(&format!("s{i}:\n  > s0\n"));
+    }
+    let error = tgw::render(&many).unwrap_err();
+    assert!(error.message.contains("256"), "{}", error.message);
+
+    let mut lines = String::from("@asm\ns:\n");
+    for i in 0..32 {
+        lines.push_str(&format!("  out{i}\n"));
+    }
+    lines.push_str("  > s\n");
+    let error = tgw::render(&lines).unwrap_err();
+    assert!(error.message.contains("32 lines"), "{}", error.message);
 }
 
 #[test]

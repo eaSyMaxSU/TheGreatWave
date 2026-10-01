@@ -1,0 +1,9 @@
+# keep
+@asm # kind
+
+# first
+a: # state
+  > b # link
+# second
+b:
+# tail

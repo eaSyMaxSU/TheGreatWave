@@ -1409,7 +1409,12 @@ mod tests {
         // Pattern sampling and a plain stroke disagree by a few levels of gray.
         // A moved edge or a missing hatch is a much larger jump.
         let mut moved = 0;
-        for (a, b) in pattern.chunks_exact(4).zip(tiled.chunks_exact(4)) {
+        for (a, b) in pattern
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(tiled.as_chunks::<4>().0)
+        {
             let delta = a
                 .iter()
                 .zip(b)
@@ -1670,6 +1675,7 @@ mod tests {
         let renderer = SvgRenderer::new(Arc::new(()));
         for name in [
             "alphabet", "ticks", "spans", "markup", "unicode", "crop", "paths", "empty", "groups",
+            "asm",
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.tgw"))).unwrap();
             let svg = tgw::render(&source).unwrap();
@@ -1691,6 +1697,38 @@ mod tests {
             assert!(ink > 10, "{name} has no ink ({ink})");
             let frame = diagram_frame(&svg).unwrap_or_else(|| panic!("{name} has no frame"));
             let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
+            if name == "asm" {
+                assert!(frame.unified, "a chart scrolls as one picture");
+                assert_eq!(layout.label_w, 0.0);
+                let waves = slice_svg(
+                    &svg,
+                    layout.wave.x,
+                    layout.wave.y,
+                    layout.wave.w,
+                    layout.wave.h,
+                )
+                .unwrap();
+                assert!(waves.contains(">idle</text>"), "{waves}");
+                assert!(waves.contains("<polygon"), "{waves}");
+                let scrolled = layout_diagram(&frame, 240.0, 180.0, 0.0, 10_000.0).unwrap();
+                assert!((scrolled.scale - 1.0).abs() < 0.01);
+                assert!(scrolled.show_h && scrolled.show_v);
+                let tail = slice_svg(
+                    &svg,
+                    scrolled.wave.x,
+                    scrolled.wave.y,
+                    scrolled.wave.w,
+                    scrolled.wave.h,
+                )
+                .unwrap();
+                assert!(
+                    tail.contains(">wait</text>") || tail.contains(">hold</text>"),
+                    "{tail}"
+                );
+                renderer
+                    .parse_svg(tail.as_bytes())
+                    .unwrap_or_else(|error| panic!("scrolled chart: {error}"));
+            }
             for (part, slice) in [("labels", layout.label), ("waves", layout.wave)] {
                 if slice.w < 1.0 || slice.h < 1.0 {
                     continue;

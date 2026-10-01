@@ -14,10 +14,6 @@ struct Ev {
     y: f64,
 }
 
-pub(crate) fn write(doc: &Doc, out: &mut Vec<u8>, indent: u8) -> Result<(), Error> {
-    write_themed(doc, out, indent, &crate::scheme::LIGHT)
-}
-
 pub(crate) fn write_themed(
     doc: &Doc,
     out: &mut Vec<u8>,
@@ -442,7 +438,7 @@ fn clip_rect(out: &mut Vec<u8>, id: &str, x: f64, y: f64, width: f64, height: f6
 
 // A stable document namespace prevents paint servers in different inline SVGs
 // from resolving to one another. Identical diagrams can safely share definitions.
-fn scope_ids(out: &mut Vec<u8>) {
+pub(crate) fn scope_ids(out: &mut Vec<u8>) {
     // Hash eight bytes at a time: a byte-by-byte dependent multiply dominated
     // rendering time for dense buses. The fixed little-endian hash is stable
     // across platforms and includes the complete rendered document.
