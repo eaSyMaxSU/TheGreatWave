@@ -1675,7 +1675,7 @@ mod tests {
         let renderer = SvgRenderer::new(Arc::new(()));
         for name in [
             "alphabet", "ticks", "spans", "markup", "unicode", "crop", "paths", "empty", "groups",
-            "asm",
+            "asm", "hls",
         ] {
             let source = std::fs::read_to_string(root.join(format!("{name}.tgw"))).unwrap();
             let svg = tgw::render(&source).unwrap();
@@ -1697,7 +1697,7 @@ mod tests {
             assert!(ink > 10, "{name} has no ink ({ink})");
             let frame = diagram_frame(&svg).unwrap_or_else(|| panic!("{name} has no frame"));
             let layout = layout_diagram(&frame, 1040.0, 680.0, 0.0, 0.0).unwrap();
-            if name == "asm" {
+            if name == "asm" || name == "hls" {
                 assert!(frame.unified, "a chart scrolls as one picture");
                 assert_eq!(layout.label_w, 0.0);
                 let waves = slice_svg(
@@ -1708,8 +1708,6 @@ mod tests {
                     layout.wave.h,
                 )
                 .unwrap();
-                assert!(waves.contains(">idle</text>"), "{waves}");
-                assert!(waves.contains("<polygon"), "{waves}");
                 let scrolled = layout_diagram(&frame, 240.0, 180.0, 0.0, 10_000.0).unwrap();
                 assert!((scrolled.scale - 1.0).abs() < 0.01);
                 assert!(scrolled.show_h && scrolled.show_v);
@@ -1721,10 +1719,20 @@ mod tests {
                     scrolled.wave.h,
                 )
                 .unwrap();
-                assert!(
-                    tail.contains(">wait</text>") || tail.contains(">hold</text>"),
-                    "{tail}"
-                );
+                if name == "asm" {
+                    assert!(waves.contains(">idle</text>"), "{waves}");
+                    assert!(waves.contains("<polygon"), "{waves}");
+                    assert!(
+                        tail.contains(">wait</text>") || tail.contains(">hold</text>"),
+                        "{tail}"
+                    );
+                } else {
+                    assert!(
+                        waves.contains(">s0</text>") || waves.contains("s0"),
+                        "{waves}"
+                    );
+                    assert!(tail.contains(">y</text>") || tail.contains("/1"), "{tail}");
+                }
                 renderer
                     .parse_svg(tail.as_bytes())
                     .unwrap_or_else(|error| panic!("scrolled chart: {error}"));

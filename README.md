@@ -2,7 +2,15 @@
 
 <img src="assets/icon/tgw.svg" width="88" height="88" align="right" alt="The Great Wave icon">
 
-`tgw` draws timing diagrams. A `.tgw` file is a list of signals, one per line, and the program turns it into a compact SVG. The same binary can keep that SVG current while you edit, and can show the diagram in a window. The rendering library has no dependencies.
+`tgw` turns a text file into a compact SVG. One binary draws three pictures. The rendering library has no dependencies.
+
+| First directive | Picture | SVG root class | Example |
+| --- | --- | --- | --- |
+| anything else, including a signal line | Timing diagram | `class="tgw"` | `examples/transfer.tgw` |
+| `@asm` | Algorithmic state machine chart | `class="tgw asm"` | `examples/asm.tgw` |
+| `@hls` | High-level synthesis schedule | `class="tgw hls"` | `examples/hls.tgw` |
+
+The first non-comment directive chooses the picture. `#` is a comment. `//` is not. A file is one picture: do not mix signal lines, `@asm`, and `@hls`. The text describes the picture. It does not store coordinates, and a schedule does not store operator counts.
 
 ```text
 @title Bus transfer
@@ -17,11 +25,22 @@ acknowledge: 1.....|01.
 
 ![Bus transfer](examples/transfer.svg)
 
+## Writing a file
+
+1. Pick the row in the table above. Put that directive on the first non-comment line, alone.
+2. Copy the matching example, then replace the names. `@title` and `@footer` work in all three.
+3. Check it: `tgw FILE` prints SVG, and `tgw FILE --convert` prints the canonical text. A bad file exits with `path:line:col: message` and a byte offset inside the message from the library.
+4. Leave layout to the renderer. Indentation matters only inside `@asm` and `@hls`.
+
+Quotes are the same in all three. A token that contains a space, `#`, a quote, or a backslash is written `"like this"`. Escapes are `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, and `\uXXXX`. Unicode can also be written directly.
+
 ## Render
 
 ```sh
 cargo build --release
 ./target/release/tgw examples/transfer.tgw -o transfer.svg
+./target/release/tgw examples/asm.tgw -o asm.svg
+./target/release/tgw examples/hls.tgw -o hls.svg
 ./target/release/tgw < examples/transfer.tgw > transfer.svg
 ```
 
@@ -29,17 +48,17 @@ cargo build --release
 
 A render refuses to replace the diagram with the SVG. The same path, a symlink, and a hard link are all the same file. On Windows, a different case of the name is the same file too.
 
-Errors name the file, line, and column.
-
 ## Convert
 
-WaveJSON and JSON5 still render. The syntax is detected automatically, or chosen with `--format tgw`, `json5`, or `auto`.
+WaveJSON and JSON5 still render as timing diagrams. The syntax is detected automatically, or chosen with `--format tgw`, `json5`, or `auto`. A source that starts with `{`, `[`, `//`, or `/*` is JSON5 under `auto`.
 
 ```sh
 ./target/release/tgw old-diagram.json5 --convert -o diagram.tgw
+./target/release/tgw examples/asm.tgw --convert
+./target/release/tgw examples/hls.tgw --convert
 ```
 
-`--convert` rewrites a native diagram into aligned columns as well. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out.
+`--convert` reprints a timing diagram in aligned columns, an ASM chart at a 2-space indent, and an HLS schedule with every cycle header filled in. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out. `--convert` cannot be combined with `--watch` or `--view`.
 
 ## Watch and view
 
@@ -47,65 +66,31 @@ WaveJSON and JSON5 still render. The syntax is detected automatically, or chosen
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --view   # window and file
 ./target/release/tgw examples/transfer.tgw --view                   # window only
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only
-./target/release/tgw examples/asm.tgw --view                        # an ASM chart, same window
+./target/release/tgw examples/asm.tgw --view                        # chart, same window
+./target/release/tgw examples/hls.tgw --view                        # schedule, same window
 ```
 
 `--view` opens a window. `--watch` does not. Both keep running, and every save of the input refreshes the picture. With `-o`, the file is refreshed too.
 
-Live mode needs a real input file. `--watch` also needs `-o`. `--convert` cannot be combined with either. A directory is rejected, and the output directory must already exist.
+Live mode needs a real input file. `--watch` also needs `-o`. A directory is rejected, and the output directory must already exist.
 
 The output is the same bytes as a one-off render with the same `--indent` and `--format`. An unchanged save does not rewrite it. A new picture is published by renaming a temporary file into place. When a rename is refused, as when Windows is holding the file open, the picture is written in place. Editors that save by renaming a sibling are followed. The file is also polled five times a second, so a save is still seen on a network drive. On Windows the poll compares names without regard to case, and uses the file index so a replaced file is seen even when the size and timestamp do not change.
 
 A syntax error, a missing file, or a write that fails leaves the last good picture in place. A diagram error is reported as `path:line:col: message`. A write error is the operating-system error. The window shows it in the status bar; `--watch` prints it on stderr. A failed write is tried again at the next poll. Ctrl-W or Ctrl-Q closes the window (Command on macOS). `--watch` stops on Ctrl-C.
 
-In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. An `@asm` chart is the same window with no name column: the whole picture scrolls, and both bars appear when it does not fit. Use the wheel or trackpad, and hold Shift to scroll sideways. Drag a scrollbar thumb, or click the track to move by most of the view. Bars appear only when the diagram overflows. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
+In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. An `@asm` chart or an `@hls` schedule is the same window with no name column: the whole picture scrolls, and both bars appear when it does not fit. When that picture fits, it is scaled by a whole number so each SVG pixel stays a whole device pixel. When it does not fit, the scale stays 1 and both scrollbars appear.
+
+Use the wheel or trackpad, and hold Shift to scroll sideways. Drag a scrollbar thumb, or click the track to move by most of the view. Bars appear only when the diagram overflows. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
 
 The window follows the system appearance. Default light is the palette written into the SVG. Default dark draws the same diagram in a dark palette. Ctrl-Shift-L (Command-Shift-L on macOS) switches between them and keeps the choice. The saved file stays on the light palette.
 
 The saved SVG stays compact: a long clock is one pattern, and an unknown value is a small hatch pattern. The window paints only the visible slice. It repeats a clock or the grid as strokes. An unknown hatch is a set of continuous slashes, carried through a bus transition, so the marks meet from one side to the other. A bus fill overlaps the edge it shares with that transition, covering the page along the seam.
 
-## Builds
+## Timing diagrams
 
-| Command | What you get |
-| --- | --- |
-| `cargo build --release` | Renderer, `--watch`, and `--view` |
-| `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, no GUI libraries |
-| `cargo build --release --no-default-features` | Renderer only, no dependencies |
+A timing diagram is the default. One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. Indentation does not matter. Do not start the file with `@asm` or `@hls`.
 
-`tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler. A program that only renders can depend on the library with `default-features = false`.
-
-## Platforms
-
-- **macOS.** The Dock shows the tgw icon while a window is open.
-- **Windows.** The icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the Visual Studio resource compiler, or `windres` for the GNU toolchain. Without one, the build warns and continues. CRLF sources render the same picture as LF. A sharing or lock violation while an editor is still saving is treated as transient, and the next poll reads the finished file.
-- **Linux.** The window runs on Wayland or X11. With neither `WAYLAND_DISPLAY` nor `DISPLAY` set, `--view` exits and names `--watch` as the alternative. Building the window needs:
-
-```sh
-sudo apt install pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-  libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
-```
-
-X11 takes the icon from the binary. Wayland looks up the desktop entry:
-
-```sh
-cargo install --path .
-install -Dm644 assets/linux/tgw.desktop ~/.local/share/applications/tgw.desktop
-install -Dm644 assets/icon/tgw.svg ~/.local/share/icons/hicolor/scalable/apps/tgw.svg
-```
-
-## Icon
-
-`assets/icon/tgw.svg` is the master: a square pulse that becomes Hokusai's wave. The Dock PNG and the Windows ICO are generated from it.
-
-```sh
-cargo run --example icon
-```
-
-## Diagram language
-
-One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. `#` starts a comment outside quotes. Indentation does not matter.
-
-Labels come after `=>`, separated by spaces. Quote a label that contains a space, `#`, `;`, a quote, or `=>`. Quotes accept `\n`, `\r`, `\t`, `\\`, escaped quotes, and `\uXXXX`. Unicode can also be written directly.
+Labels come after `=>`, separated by spaces. Quote a label that contains a space, `#`, `;`, a quote, or `=>`.
 
 ```text
 @group Master
@@ -122,7 +107,7 @@ Labels come after `=>`, separated by spaces. Quote a label that contains a space
 
 A node is one letter in the mask: `.` skips a cycle, and `[setup]` names that one cycle with a word. An uppercase letter is drawn without a label. `@edge setup~>hold "tSU"` connects two names. A missing name or an unknown connector is an error, and the message lists the nodes or the connectors.
 
-`@group Name` and `@end` nest, up to 64 deep. `@group` with no name draws an unlabeled bracket.
+`@group Name` and `@end` nest, up to 64 deep. `@group` with no name draws an unlabeled bracket. `@end` closes the nearest group. It is not used in an ASM chart or an HLS schedule.
 
 | Option | Effect |
 | --- | --- |
@@ -176,7 +161,13 @@ analog: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 A0.5,0.5 0 0 1 4,1 L5,0
 
 Register and assign diagrams are not supported. JSON5 input accepts the subset usual for these diagrams: bare or quoted keys, either quote style, comments, trailing commas, arrays, objects, finite numbers, booleans, and null.
 
-A file whose first directive is `@asm` is an algorithmic state machine chart. Every other file stays a timing diagram. Indentation matters only after `@asm`. `#` comments, `@title`, and `@footer` work as they do above. `--convert` reprints the chart at a 2-space indent.
+When generating a timing diagram: one `name: wave` line per signal, labels only after `=>`, node names only in `node=` or `@edge`, and a `#` comment rather than `//`.
+
+## ASM charts
+
+A file whose first directive is `@asm` is an algorithmic state machine chart. Indentation matters only in this file. `#` comments, `@title`, and `@footer` work as they do on a timing diagram. `@end` is not used. `--convert` reprints the chart at a 2-space indent.
+
+`examples/asm.tgw`:
 
 ```text
 @asm
@@ -192,21 +183,102 @@ idle:
 wait:
   ack=1
   ? done
-    0 wait
+    0 ? hold
+      0 wait
+      1 idle
     1 idle
 ```
 
-`name:` opens a state. Later lines that are not `?` or `>` are outputs, one line each. `? condition` is a decision with exits `0` and `1`, in either order. `1 (req=1) wait` draws a conditional-output box on that exit, then links to `wait`. `> next` is an unconditional exit. A state with no exit is terminal. An exit may be a nested `?` instead of a state name.
+`name:` at column 0 opens a state. The name is a bare token, or a quoted string when it contains a space or `:`. Lines under the state, in order:
 
-Inside a block, `0` continues down and `1` leaves to the right. Blocks stack in source order. A link into the block directly below is a straight arrow. Any other link runs in a side channel: forward on the right, back on the left. The text does not carry coordinates.
+1. Moore outputs, one line each, such as `req=0`. These come before any exit. A state box holds at most 32 lines.
+2. One exit. `> next` links straight to `next`. `? condition` is a decision and replaces that one exit. A state with no exit is terminal.
 
-The window shows the chart as one picture, with no name column. When the chart fits, it is scaled by a whole number so each SVG pixel stays a whole device pixel. When it does not fit, the scale stays 1 and both scrollbars appear.
+A decision has exits `0` and `1`, in either order, at the same indent, one step deeper than the `?` line. `0` continues down. `1` leaves to the right. Each exit is a state name or a nested `?`:
+
+```text
+? start
+  0 idle
+  1 (req=1) wait
+```
+
+`1 (req=1) wait` draws a conditional-output box on that exit, then links to `wait`. The parentheses are required around the condition output. A nested decision takes the place of the state name:
+
+```text
+0 ? hold
+  0 wait
+  1 idle
+```
+
+Blocks stack in source order. A link into the state directly below is a straight arrow. Any other link runs in a side channel: forward on the right, back on the left. The text does not carry coordinates, column numbers, or arrow routes.
+
+Caps: 256 states, 32 lines in one state box, 32 nested decisions. A second exit on a state (`> a` and `> b`, or `>` plus `?`) is an error. A decision that lacks `0` or `1`, repeats one of them, or indents the two exits differently is an error. An unknown target lists the state names. A directive after the first state is an error (`directives belong before the states`).
+
+When generating a chart: start with `@asm`, put every state name at column 0, indent outputs and the exit, indent `0` and `1` one level under `?`, and give every decision both exits. Two spaces per level is the canonical indent.
+
+## HLS schedules
+
+A file whose first directive is `@hls` is a high-level synthesis schedule. Time runs down. A horizontal rule is a clock edge, and the band under that rule is one cycle. Cycle `0` is the top. Operators in one band run in the same cycle. Indentation matters only in this file. `#` comments, `@title`, and `@footer` work as they do on a timing diagram. `@end` and `@asm` are not used.
+
+`examples/hls.tgw`:
+
+```text
+@hls
+@title Scaled sum of products
+
+0:
+  + a b -> s0
+  + c d -> s1
+  * e f -> p
+1:
+  * s0 s1 -> m
+2:
+  + m p -> t
+3:
+  / t n -> y !3
+```
+
+Cycle `0` uses two adders and one multiplier. Cycle `1` multiplies `s0` and `s1`; `p` is carried through that cycle because nothing reads it yet. Cycle `2` adds `m` and `p`. Cycle `3` starts a divider that stays busy for three cycles, so cycles 3, 4, and 5 each count one divider, and `y` is ready at the end of cycle 5. No operator reads a value written in the same cycle.
+
+A cycle header is `N:` at column 0. Numbers start at 0, increase, and have no leading zeros. A missing number is still drawn, as an empty band whose count is `+0 *0 /0`. An operator is indented under the cycle it starts in. Canonical indent is two spaces.
+
+| Line | Unit |
+| --- | --- |
+| `+ a b -> s0` | Adder. |
+| `* e f -> p` | Multiplier. |
+| `/ t n -> y` | Divider. |
+
+The two operands are names or integer constants, including negatives (`-2`). The name after `->` is the result. `!N` keeps that unit busy for N cycles, this cycle and the next N−1, and the count on each of those rules includes it. Omit `!N` when the unit lasts one cycle. `!1` is accepted and `--convert` drops it. `--convert` writes `!N` only when N is not 1, and it prints every cycle header from 0 through the last busy cycle, including gaps and the empty tail of a multi-cycle unit.
+
+A name that is not yet a result is a primary input (`a`, `b`, `n` in the example). A result becomes readable at cycle `start + N`. Using it earlier, or using a result as its own operand, is an error: `result "s0" is not ready until cycle K; results are ...`. Defining the same result twice is `duplicate result "s0"`. A token in the operand position that is `+`, `*`, `/`, `->`, or starts with `!` is an unknown operand, and the message lists the results defined so far.
+
+The caption on each rule is `N  +a  *m  /d`. `a`, `m`, and `d` count boxes of that kind whose lifetime covers the cycle, including a unit that started earlier and is still busy. Side-by-side boxes are that count. The caption is computed. Do not write it in the file.
+
+A result used later is a 1px wire from the producer's bottom to that operand's port on the consumer. The left operand enters the left port and the right operand enters the right port. A consumer in the same column is a straight drop. A result that never appears again is a live-out and stops in a short stub under its box.
+
+Caps: 64 cycles, 32 operators started in one cycle, 256 operators in the file. A latency that would pass cycle 63 is an error. Cycle numbers that do not increase are an error. A cycle header that is indented is `a cycle header starts at column 0`. An operator before any cycle is `an operator belongs to a cycle`. `@hls` takes no arguments. A directive after the first cycle is `directives belong before the cycles`.
+
+When generating a schedule: one short line per operator, both operands, a fresh result name, and `!N` only for a unit that stays busy. Order the cycle headers from 0 upward. Do not chain two operators in the same cycle. Do not store coordinates or the `+ n * n / n` counts.
+
+Quoted names and constants:
+
+```text
+@hls
+0:
+  + "go on" b -> "out put"
+1:
+  * s -2 -> p
+```
+
+An unquoted integer is a constant. A quoted integer is a name, so `"1"` is not the constant `1`.
 
 ## Picture
 
 Bus transitions cross at the same point, and a label is centered on the visible part of its value. A gap clears the trace underneath it. Each SVG has a title, a description, and paint ids that belong to that document only. There is no global stylesheet, so several diagrams can sit on one page.
 
 A long clock is one shared pattern. A long hold is one stroke. `@bounds` drops geometry outside the window, including annotations, instead of emitting it and hiding it. `render_into` reuses the caller's buffer. Text is measured against a conservative sans-serif, so a label's exact width can differ slightly by platform.
+
+ASM boxes and HLS boxes sit on a pixel grid. Text plus padding is snapped outward to 4px. The border is a filled ink ring with a paper rectangle inset by 1px, so a 1px edge stays on whole pixels. HLS cycle rules and value wires are 1px filled rectangles. Text is the only antialiased paint. The root transform is `translate(8,8)`.
 
 ```sh
 cargo run --release --example long_wave
@@ -224,7 +296,46 @@ let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 # Ok::<(), tgw::Error>(())
 ```
 
-`render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_with_format` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
+`render`, `render_into`, and `to_tgw` accept all three pictures. `render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_with_format` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
+
+A program that only renders can depend on the library with `default-features = false`.
+
+## Builds
+
+| Command | What you get |
+| --- | --- |
+| `cargo build --release` | Renderer, `--watch`, and `--view` |
+| `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, no GUI libraries |
+| `cargo build --release --no-default-features` | Renderer only, no dependencies |
+
+`tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler.
+
+## Platforms
+
+- **macOS.** The Dock shows the tgw icon while a window is open.
+- **Windows.** The icon is embedded in `tgw.exe` for Explorer, the taskbar, and the title bar. That needs the Visual Studio resource compiler, or `windres` for the GNU toolchain. Without one, the build warns and continues. CRLF sources render the same picture as LF. A sharing or lock violation while an editor is still saving is treated as transient, and the next poll reads the finished file.
+- **Linux.** The window runs on Wayland or X11. With neither `WAYLAND_DISPLAY` nor `DISPLAY` set, `--view` exits and names `--watch` as the alternative. Building the window needs:
+
+```sh
+sudo apt install pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+  libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
+```
+
+X11 takes the icon from the binary. Wayland looks up the desktop entry:
+
+```sh
+cargo install --path .
+install -Dm644 assets/linux/tgw.desktop ~/.local/share/applications/tgw.desktop
+install -Dm644 assets/icon/tgw.svg ~/.local/share/icons/hicolor/scalable/apps/tgw.svg
+```
+
+## Icon
+
+`assets/icon/tgw.svg` is the master: a square pulse that becomes Hokusai's wave. The Dock PNG and the Windows ICO are generated from it.
+
+```sh
+cargo run --example icon
+```
 
 ## Checks
 
@@ -242,9 +353,9 @@ cargo doc --locked --no-deps
 cargo build --locked --release
 ```
 
-The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release.
+The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. The default `cargo test --locked` and the release run include the 1:1 screenshot checks for ASM charts and HLS schedules.
 
-`tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
+`tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/fixtures/asm/` and `tests/fixtures/hls/` hold one edge case per file, plus `tests/fixtures/asm.tgw` and `tests/fixtures/hls.tgw`. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, including the chart and the schedule, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test --test render snapshots

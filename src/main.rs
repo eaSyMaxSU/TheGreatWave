@@ -10,6 +10,8 @@ use tgw::InputFormat;
 
 #[cfg(all(test, feature = "view"))]
 mod asm_pixels;
+#[cfg(all(test, feature = "view"))]
+mod hls_pixels;
 #[cfg(feature = "view")]
 mod layout;
 #[cfg(feature = "watch")]
@@ -76,6 +78,8 @@ Language:
   A missing node or an unknown connector is an error.
   A file that starts with @asm is an ASM chart. Indent matters only there.
   0 continues down and 1 leaves to the right.
+  A file that starts with @hls is a schedule. Time runs down, one band per cycle.
+  !N keeps that unit busy for N cycles.
 ";
 
 #[derive(Debug, PartialEq, Eq)]

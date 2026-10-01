@@ -576,6 +576,124 @@ fn asm_edge_cases_are_errors() {
 }
 
 #[test]
+fn hls_edge_cases_render_and_round_trip() {
+    let dir = root().join("tests/fixtures/hls");
+    let mut paths: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tgw"))
+        .collect();
+    paths.sort();
+    assert!(paths.len() >= 12, "{paths:?}");
+    let one = tgw::render(&fs::read_to_string(dir.join("one.tgw")).unwrap()).unwrap();
+    let schedule =
+        tgw::render(&fs::read_to_string(root().join("examples/hls.tgw")).unwrap()).unwrap();
+    for path in &paths {
+        let source = fs::read_to_string(path).unwrap();
+        let name = path.file_stem().unwrap().to_string_lossy();
+        let svg = tgw::render(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(svg.contains("class=\"tgw hls\""), "{name}");
+        assert!(svg.contains("translate(8,8)"), "{name}");
+        assert!(!svg.contains("<g><rect"), "{name} label pill");
+        assert_integer_geometry(&svg, &name);
+        let converted = tgw::to_tgw(&source).unwrap();
+        assert_eq!(tgw::render(&converted).unwrap(), svg, "{name} convert");
+        assert_eq!(tgw::to_tgw(&converted).unwrap(), converted, "{name} stable");
+        let crlf = source.replace('\n', "\r\n");
+        assert_eq!(tgw::render(&crlf).unwrap(), svg, "{name} crlf");
+        let mut dark = Vec::new();
+        tgw::render_themed(
+            &source,
+            &mut dark,
+            0,
+            tgw::InputFormat::Tgw,
+            &tgw::scheme::DARK,
+        )
+        .unwrap();
+        let dark = String::from_utf8(dark).unwrap();
+        if svg.contains("\"#000\"") {
+            assert!(dark.contains(tgw::scheme::DARK.ink), "{name}");
+        }
+        assert!(dark.contains(tgw::scheme::DARK.paper), "{name}");
+        assert_eq!(
+            dark.matches("<rect ").count(),
+            svg.matches("<rect ").count(),
+            "{name} dark geometry"
+        );
+    }
+    assert_eq!(
+        tgw::render(&fs::read_to_string(dir.join("comments.tgw")).unwrap()).unwrap(),
+        one
+    );
+    assert_eq!(
+        tgw::render(&fs::read_to_string(dir.join("wide.tgw")).unwrap()).unwrap(),
+        schedule
+    );
+    let divider = tgw::render(&fs::read_to_string(dir.join("divider.tgw")).unwrap()).unwrap();
+    assert!(divider.contains("/1"), "{divider}");
+    assert!(schedule.contains("+2"), "{schedule}");
+}
+
+#[test]
+fn hls_edge_cases_are_errors() {
+    let cases = [
+        ("@hls extra\n", "@hls takes no arguments"),
+        ("@hls\n  0:\n", "column 0"),
+        ("@hls\n@end\n", "@end is not used"),
+        ("@hls\n@nope\n", "unknown directive"),
+        (
+            "@hls\n0:\n  + a b -> s\n@title later\n",
+            "directives belong before",
+        ),
+        ("@hls\n0:\n  + a b -> s\n  + s c -> t\n", "not ready"),
+        (
+            "@hls\n0:\n  + a b -> s\n1:\n  + c d -> s\n",
+            "duplicate result",
+        ),
+        ("@hls\n0:\n  + a -> -> s\n", "unknown operand"),
+        (
+            "@hls\n1:\n  + a b -> s\n0:\n  + c d -> t\n",
+            "must increase",
+        ),
+        ("@hls\n60:\n  / a b -> y !8\n", "64"),
+    ];
+    for (source, needle) in cases {
+        let error = tgw::render(source).unwrap_err();
+        assert!(
+            error.message.contains(needle),
+            "{source:?} -> {}",
+            error.message
+        );
+        assert!(error.offset <= source.len(), "{source:?}");
+    }
+
+    let mut wide = String::from("@hls\n0:\n");
+    for i in 0..33 {
+        wide.push_str(&format!("  + a b -> s{i}\n"));
+    }
+    let error = tgw::render(&wide).unwrap_err();
+    assert!(error.message.contains("32"), "{}", error.message);
+
+    let mut deep = String::from("@hls\n");
+    for cycle in 0..64 {
+        deep.push_str(&format!("{cycle}:\n"));
+    }
+    deep.push_str("64:\n");
+    let error = tgw::render(&deep).unwrap_err();
+    assert!(error.message.contains("64"), "{}", error.message);
+
+    let mut many = String::from("@hls\n");
+    for i in 0..257 {
+        if i % 8 == 0 {
+            many.push_str(&format!("{}:\n", i / 8));
+        }
+        many.push_str(&format!("  + a b -> s{i}\n"));
+    }
+    let error = tgw::render(&many).unwrap_err();
+    assert!(error.message.contains("256"), "{}", error.message);
+}
+
+#[test]
 fn malformed_utf8_source_fragments_are_bounded() {
     let alphabet = [
         '{', '}', '[', ']', '\"', '\\', '/', '*', ':', ',', '.', '+', '-', '0', '1', 'e', 'a', ' ',
