@@ -1,5 +1,4 @@
 //! The line-oriented .tgw syntax parses directly into the render model.
-//! No intermediate JSON, general-purpose value tree, or runtime dependencies.
 use crate::scan::{parse_edge, Body, Doc, Group, Lane, Remark, Tick};
 use crate::Error;
 use std::borrow::Cow;
@@ -39,6 +38,9 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
             trailing: comment,
         };
         let error = |text: &str| err(at, text);
+        if line.starts_with("//") || line.starts_with("/*") {
+            return Err(error("a .tgw comment starts with #"));
+        }
         if let Some(directive) = line.strip_prefix('@') {
             let (key, value) = directive
                 .split_once(char::is_whitespace)

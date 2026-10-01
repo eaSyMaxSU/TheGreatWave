@@ -195,9 +195,8 @@ fn assert_well_formed(name: &str, svg: &str) {
 #[test]
 fn windows_line_endings_render_the_same_picture() {
     let fixtures = root().join("tests/fixtures");
-    let mut sources: Vec<PathBuf> = [fixtures.clone(), fixtures.join("legacy")]
-        .iter()
-        .flat_map(|dir| fs::read_dir(dir).unwrap())
+    let mut sources: Vec<PathBuf> = fs::read_dir(&fixtures)
+        .unwrap()
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext != "svg"))
         .collect();
@@ -221,10 +220,10 @@ fn windows_line_endings_render_the_same_picture() {
 
 #[test]
 fn long_clock_is_constant_paint() {
-    let short = "{signal:[{name:'clk',wave:'p...'}]}";
+    let short = "clk: p...";
     let mut dots = String::from("p");
     dots.extend(std::iter::repeat_n('.', 9_999));
-    let long = format!("{{signal:[{{name:'clk',wave:'{dots}'}}]}}");
+    let long = format!("clk: {dots}");
     let a = tgw::render(short).unwrap();
     let b = tgw::render(&long).unwrap();
     assert!(b.len() < 8_000, "svg bytes {}", b.len());
@@ -241,18 +240,18 @@ fn long_clock_is_constant_paint() {
 fn long_hold_is_one_stroke() {
     let mut dots = String::from("1");
     dots.extend(std::iter::repeat_n('.', 9_999));
-    let src = format!("{{signal:[{{name:'held',wave:'{dots}'}}]}}");
+    let src = format!("held: {dots}");
     let svg = tgw::render(&src).unwrap();
     assert!(svg.contains("H400000"));
     assert!(!svg.contains("<use"));
-    let short = tgw::render("{signal:[{name:'held',wave:'1'}]}").unwrap();
+    let short = tgw::render("held: 1").unwrap();
     assert_eq!(tags(&short, "path"), tags(&svg, "path"));
     assert_eq!(svg.matches("H400000").count(), 1);
 }
 
 #[test]
 fn clock_after_prefix_is_translated() {
-    let svg = tgw::render("{signal:[{name:'c',wave:'xp'}]}").unwrap();
+    let svg = tgw::render("c: xp").unwrap();
     assert!(svg.contains("translate(40)"));
     assert!(svg.contains("-k0)"));
 }
@@ -260,18 +259,18 @@ fn clock_after_prefix_is_translated() {
 #[test]
 fn indent_and_errors() {
     let mut buf = Vec::new();
-    tgw::render_opts("{signal:[{name:'a',wave:'01'}]}", &mut buf, 2).unwrap();
+    tgw::render_opts("a: 01", &mut buf, 2).unwrap();
     let pretty = String::from_utf8(buf).unwrap();
     assert!(pretty.contains('\n'));
     let err = tgw::render("[").unwrap_err();
     assert_eq!(err.offset, 0);
-    let err = tgw::render("{config:{hscale:1}}").unwrap_err();
+    let err = tgw::render("").unwrap_err();
     assert!(err.message.contains("signal"));
 }
 
 #[test]
 fn buffer_is_reused() {
-    let src = "{signal:[{name:'a',wave:'p...'}]}";
+    let src = "a: p...";
     let mut buf = Vec::new();
     tgw::render_into(src, &mut buf).unwrap();
     let first = buf.clone();
@@ -281,13 +280,8 @@ fn buffer_is_reused() {
 }
 
 #[test]
-fn piecewise_and_comments() {
-    let src = r#"{
-      // a comment
-      signal: [
-        { name: 'pw', wave: ['pw', {d:'M0,0 L1,1'}], },
-      ],
-    }"#;
+fn path_lane_renders() {
+    let src = "pw: path M0,0 L1,1\n";
     let svg = tgw::render(src).unwrap();
     assert!(svg.contains("<path"));
     assert!(svg.contains("M0,0"));
@@ -306,9 +300,9 @@ fn dimension(svg: &str, attribute: &str) -> f64 {
 
 #[test]
 fn fractional_and_negative_phase_have_correct_canvas_extents() {
-    let plain = tgw::render("{signal:[{name:'clk',wave:'p...'}]}").unwrap();
-    let delayed = tgw::render("{signal:[{name:'clk',wave:'p...',phase:-0.25}]}").unwrap();
-    let advanced = tgw::render("{signal:[{name:'clk',wave:'p...',phase:0.125}]}").unwrap();
+    let plain = tgw::render("clk: p...").unwrap();
+    let delayed = tgw::render("clk: p... ; phase=-0.25").unwrap();
+    let advanced = tgw::render("clk: p... ; phase=0.125").unwrap();
     assert_eq!(
         dimension(&delayed, "width") - dimension(&plain, "width"),
         10.0
@@ -324,10 +318,7 @@ fn fractional_and_negative_phase_have_correct_canvas_extents() {
 #[test]
 fn cropped_dense_waves_only_paint_the_visible_window() {
     let wave = "23456789".repeat(1250);
-    let svg = tgw::render(&format!(
-        "{{signal:[{{name:'data',wave:'{wave}'}}],config:{{hbounds:[5000,5005]}}}}"
-    ))
-    .unwrap();
+    let svg = tgw::render(&format!("@bounds 5000 5005\ndata: {wave}")).unwrap();
     assert!(
         svg.len() < 12_000,
         "cropped SVG contains {} bytes",
@@ -338,8 +329,8 @@ fn cropped_dense_waves_only_paint_the_visible_window() {
 
 #[test]
 fn inline_documents_isolate_paint_and_preserve_text() {
-    let a = tgw::render("{signal:[{name:'url(#k0)',wave:'p...'}]}").unwrap();
-    let b = tgw::render("{signal:[{name:'second',wave:'n...'}]}").unwrap();
+    let a = tgw::render("\"url(#k0)\": p...").unwrap();
+    let b = tgw::render("second: n...").unwrap();
     let ids = |s: &str| -> Vec<String> {
         s.split(" id=\"")
             .skip(1)
@@ -365,7 +356,8 @@ fn inline_documents_isolate_paint_and_preserve_text() {
 
 #[test]
 fn paths_preserve_curves_arcs_and_native_scaling() {
-    let svg = tgw::render("{signal:[{name:'analog',period:2,wave:['pw',{d:'M0,0 C1,0 1,1 2,1 A1,1 30 0 1 3,0'}]}],config:{hscale:2}}").unwrap();
+    let svg =
+        tgw::render("@scale 2\nanalog: path M0,0 C1,0 1,1 2,1 A1,1 30 0 1 3,0 ; period=2").unwrap();
     assert!(svg.contains("scale(160,-20)"));
     assert!(svg.contains("stroke-width=\"0.006\""));
     assert!(!svg.contains("vector-effect"));
@@ -377,10 +369,10 @@ fn paths_preserve_curves_arcs_and_native_scaling() {
 fn errors_clear_reused_output_and_do_not_panic() {
     let mut out = vec![42; 1024];
     for source in [
-        "{signal:[{wave:'p',period:-1}]}",
-        "{signal:[{wave:['pw',{d:'M0 0 !'}]}]}",
-        "{signal:[{wave:'p'}],head:{tick:'0 1e308'}}",
-        "{signal:[] /*",
+        "a: p ; period=-1",
+        "a: path M0 0 !",
+        "@tick 0 1e308\na: p",
+        "@group\n",
     ] {
         assert!(tgw::render_into(source, &mut out).is_err(), "{source}");
         assert!(out.is_empty());
@@ -411,14 +403,7 @@ fn asm_chart_round_trips_and_stays_on_the_pixel_grid() {
         }
     }
     let mut dark = Vec::new();
-    tgw::render_themed(
-        &source,
-        &mut dark,
-        0,
-        tgw::InputFormat::Tgw,
-        &tgw::scheme::DARK,
-    )
-    .unwrap();
+    tgw::render_themed(&source, &mut dark, 0, &tgw::scheme::DARK).unwrap();
     let dark = String::from_utf8(dark).unwrap();
     assert!(dark.contains(tgw::scheme::DARK.ink));
     assert!(dark.contains(tgw::scheme::DARK.paper));
@@ -450,14 +435,7 @@ fn asm_edge_cases_render_and_round_trip() {
         let crlf = source.replace('\n', "\r\n");
         assert_eq!(tgw::render(&crlf).unwrap(), svg, "{name} crlf");
         let mut dark = Vec::new();
-        tgw::render_themed(
-            &source,
-            &mut dark,
-            0,
-            tgw::InputFormat::Tgw,
-            &tgw::scheme::DARK,
-        )
-        .unwrap();
+        tgw::render_themed(&source, &mut dark, 0, &tgw::scheme::DARK).unwrap();
         let dark = String::from_utf8(dark).unwrap();
         if svg.contains("\"#000\"") {
             assert!(dark.contains(tgw::scheme::DARK.ink), "{name}");
@@ -602,14 +580,7 @@ fn hls_edge_cases_render_and_round_trip() {
         let crlf = source.replace('\n', "\r\n");
         assert_eq!(tgw::render(&crlf).unwrap(), svg, "{name} crlf");
         let mut dark = Vec::new();
-        tgw::render_themed(
-            &source,
-            &mut dark,
-            0,
-            tgw::InputFormat::Tgw,
-            &tgw::scheme::DARK,
-        )
-        .unwrap();
+        tgw::render_themed(&source, &mut dark, 0, &tgw::scheme::DARK).unwrap();
         let dark = String::from_utf8(dark).unwrap();
         if svg.contains("\"#000\"") {
             assert!(dark.contains(tgw::scheme::DARK.ink), "{name}");
@@ -720,14 +691,7 @@ fn gtl_edge_cases_render_and_round_trip() {
         let crlf = source.replace('\n', "\r\n");
         assert_eq!(tgw::render(&crlf).unwrap(), svg, "{name} crlf");
         let mut dark = Vec::new();
-        tgw::render_themed(
-            &source,
-            &mut dark,
-            0,
-            tgw::InputFormat::Tgw,
-            &tgw::scheme::DARK,
-        )
-        .unwrap();
+        tgw::render_themed(&source, &mut dark, 0, &tgw::scheme::DARK).unwrap();
         let dark = String::from_utf8(dark).unwrap();
         if svg.contains("\"#000\"") {
             assert!(dark.contains(tgw::scheme::DARK.ink), "{name}");
@@ -822,7 +786,7 @@ fn malformed_utf8_source_fragments_are_bounded() {
     let mut seed = 0x317f9_u64;
     for len in 0..160 {
         for _ in 0..12 {
-            let mut source = String::from("{signal:");
+            let mut source = String::from("clk:");
             for _ in 0..len {
                 seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
                 source.push(alphabet[(seed >> 32) as usize % alphabet.len()]);

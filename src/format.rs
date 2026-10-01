@@ -378,16 +378,16 @@ mod tests {
 
     #[test]
     fn conversion_keeps_groups_metadata_and_escaped_labels() {
-        let doc = crate::scan::parse(r#"{signal:[['bus',{name:'a:b',wave:'2.',data:['line\n\"two\"'],node:'a.'},null],{name:'analog',wave:['pw',{d:'M0,0 L1,1'}],period:2,phase:.5}],edge:['a~>b delay'],head:{text:'demo'}}"#).unwrap();
-        assert_eq!(write(&doc), "@wvf\n@title demo\n\n@group bus\n  \"a:b\": 2. => \"line\\n\\\"two\\\"\" ; node=a.\n  ---\n@end\nanalog:  path M0,0 L1,1 ; period=2 ; phase=0.5\n\n@edge a~>b delay\n");
+        let source = "@wvf\n@title demo\n\n@group bus\n  \"a:b\": 2. => \"line\\n\\\"two\\\"\" ; node=a.\n  ---\n@end\nanalog:  path M0,0 L1,1 ; period=2 ; phase=0.5\n\n@edge a~>b delay\n";
+        let doc = crate::native::parse(source).unwrap();
+        assert_eq!(write(&doc), source);
     }
 
     #[test]
-    fn conversion_restores_tick_origin_and_keeps_explicit_precision() {
-        let doc = crate::scan::parse("{signal:[],head:{tick:0,tock:'2 0.010'},foot:{tick:['zero','one']},config:{hbounds:[2,5]}}").unwrap();
-        assert_eq!(
-            write(&doc),
-            "@wvf\n@tick 0\n@tock 0.02 0.010\n@foot-tick \"zero\" \"one\"\n@bounds 2 5\n@empty\n"
-        );
+    fn conversion_keeps_tick_origin_and_explicit_precision() {
+        let source =
+            "@wvf\n@tick 0\n@tock 0.02 0.010\n@foot-tick \"zero\" \"one\"\n@bounds 2 5\n@empty\n";
+        let doc = crate::native::parse(source).unwrap();
+        assert_eq!(write(&doc), source);
     }
 }

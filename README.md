@@ -53,16 +53,14 @@ A render refuses to replace the diagram with the SVG. The same path, a symlink, 
 
 ## Convert
 
-WaveJSON and JSON5 still render as timing diagrams. The syntax is detected automatically, or chosen with `--format tgw`, `json5`, or `auto`. A source that starts with `{`, `[`, `//`, or `/*` is JSON5 under `auto`.
-
 ```sh
-./target/release/tgw old-diagram.json5 --convert -o diagram.tgw
+./target/release/tgw examples/transfer.tgw --convert
 ./target/release/tgw examples/asm.tgw --convert
 ./target/release/tgw examples/hls.tgw --convert
 ./target/release/tgw examples/gtl.tgw --convert
 ```
 
-`--convert` reprints a timing diagram starting with `@wvf` and aligned columns, an ASM chart at a 2-space indent, an HLS schedule with every cycle header filled in, and a gate netlist as `@gtl` followed by one gate per line. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out. `--convert` cannot be combined with `--watch` or `--view`.
+`--convert` reprints a timing diagram starting with `@wvf` and aligned columns, an ASM chart at a 2-space indent, an HLS schedule with every cycle header filled in, and a gate netlist as `@gtl` followed by one gate per line. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. `--convert` cannot be combined with `--watch` or `--view`.
 
 ## Watch and view
 
@@ -79,7 +77,7 @@ WaveJSON and JSON5 still render as timing diagrams. The syntax is detected autom
 
 Live mode needs a real input file. `--watch` also needs `-o`. A directory is rejected, and the output directory must already exist.
 
-The output is the same bytes as a one-off render with the same `--indent` and `--format`. An unchanged save does not rewrite it. A new picture is published by renaming a temporary file into place. When a rename is refused, as when Windows is holding the file open, the picture is written in place. Editors that save by renaming a sibling are followed. The file is also polled five times a second, so a save is still seen on a network drive. On Windows the poll compares names without regard to case, and uses the file index so a replaced file is seen even when the size and timestamp do not change.
+The output is the same bytes as a one-off render with the same `--indent`. An unchanged save does not rewrite it. A new picture is published by renaming a temporary file into place. When a rename is refused, as when Windows is holding the file open, the picture is written in place. Editors that save by renaming a sibling are followed. The file is also polled five times a second, so a save is still seen on a network drive. On Windows the poll compares names without regard to case, and uses the file index so a replaced file is seen even when the size and timestamp do not change.
 
 A syntax error, a missing file, or a write that fails leaves the last good picture in place. A diagram error is reported as `path:line:col: message`. A write error is the operating-system error. The window shows it in the status bar; `--watch` prints it on stderr. A failed write is tried again at the next poll. Ctrl-W or Ctrl-Q closes the window (Command on macOS). `--watch` stops on Ctrl-C.
 
@@ -165,7 +163,7 @@ An analog trace is an SVG path. X is in cycles. Y runs from 0 at the low rail to
 analog: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 A0.5,0.5 0 0 1 4,1 L5,0
 ```
 
-Register and assign diagrams are not supported. JSON5 input accepts the subset usual for these diagrams: bare or quoted keys, either quote style, comments, trailing commas, arrays, objects, finite numbers, booleans, and null.
+Register and assign diagrams are not supported.
 
 When generating a timing diagram: start with `@wvf`, then one `name: wave` line per signal, labels only after `=>`, node names only in `node=` or `@edge`, and a `#` comment rather than `//`.
 
@@ -326,7 +324,7 @@ ASM boxes, HLS boxes, and gate boxes sit on a pixel grid. Text plus padding is s
 cargo run --release --example long_wave
 ```
 
-That example reports median and p95 render times, SVG sizes, and native versus JSON5 for long signals.
+That example reports median and p95 render times and SVG sizes for long signals.
 
 ## Library
 
@@ -334,11 +332,11 @@ That example reports median and p95 render times, SVG sizes, and native versus J
 let svg = tgw::render("@wvf\nclk: P...\ndata: x3.4 => ready done")?;
 let mut buffer = Vec::new();
 tgw::render_into("@wvf\nclk: p...", &mut buffer)?;
-let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
+let editable = tgw::to_tgw("clk: p...")?;
 # Ok::<(), tgw::Error>(())
 ```
 
-`render`, `render_into`, and `to_tgw` accept all four pictures. `render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_with_format` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
+`render`, `render_into`, and `to_tgw` accept all four pictures. `render_opts` indents the SVG. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_opts` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
 A program that only renders can depend on the library with `default-features = false`.
 
@@ -397,7 +395,7 @@ cargo build --locked --release
 
 The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. The default `cargo test --locked` and the release run include the 1:1 screenshot checks for ASM charts, HLS schedules, and gate netlists.
 
-`tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/fixtures/asm/`, `tests/fixtures/hls/`, and `tests/fixtures/gtl/` hold one edge case per file, plus `tests/fixtures/asm.tgw`, `tests/fixtures/hls.tgw`, and `tests/fixtures/gtl.tgw`. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, including the chart, the schedule, and the netlist, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
+`tests/fixtures` holds diagrams and their SVG snapshots. The original eight timing diagrams must render the same picture under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/fixtures/asm/`, `tests/fixtures/hls/`, and `tests/fixtures/gtl/` hold one edge case per file, plus `tests/fixtures/asm.tgw`, `tests/fixtures/hls.tgw`, and `tests/fixtures/gtl.tgw`. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, including the chart, the schedule, and the netlist, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test --test render snapshots
@@ -415,4 +413,4 @@ Set `PLAYWRIGHT_MODULE` and `BROWSER_EXECUTABLE` when they are not on the defaul
 
 The Great Wave is released under the MIT License. Copyright (c) 2026 eaSyMaxSU.
 
-Wave rules, lane semantics, and the default bus palette originate in [WaveDrom](https://wavedrom.com/) by Aliaksei Chapyzhenka (Copyright 2011–2026), which is MIT licensed ([source](https://github.com/wavedrom/wavedrom), [WaveJSON](https://github.com/wavedrom/schema)). Legacy input uses the [JSON5](https://spec.json5.org/) subset customary for those diagrams ([project](https://github.com/json5/json5), MIT). SVG arc geometry follows the [SVG 2 arc implementation notes](https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes).
+Wave rules, lane semantics, and the default bus palette originate in [WaveDrom](https://wavedrom.com/) by Aliaksei Chapyzhenka (Copyright 2011–2026), which is MIT licensed ([source](https://github.com/wavedrom/wavedrom)). SVG arc geometry follows the [SVG 2 arc implementation notes](https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes).

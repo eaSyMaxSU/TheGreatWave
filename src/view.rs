@@ -1,4 +1,4 @@
-//! Live window for one `.tgw` or WaveJSON file.
+//! Live window for one `.tgw` file.
 
 use std::future::{poll_fn, Future};
 use std::io::{self, Write};
@@ -551,7 +551,6 @@ impl Viewer {
             wave,
             svg,
             theme_source,
-            format: self.job.format,
             renderer: cx.svg_renderer(),
             scheme: self.scheme,
         })
@@ -866,7 +865,6 @@ struct PaintJob {
     svg: Arc<str>,
     /// Source to render when this scheme is not cached yet. The file is not written.
     theme_source: Option<Arc<str>>,
-    format: tgw::InputFormat,
     renderer: gpui_kit::SvgRenderer,
     scheme: &'static Scheme,
 }
@@ -953,7 +951,6 @@ fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>, Option<A
         renderer,
         svg,
         theme_source,
-        format,
         label,
         wave,
         scale,
@@ -964,7 +961,7 @@ fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>, Option<A
     } = job;
     let themed = theme_source.and_then(|source| {
         let mut buf = Vec::new();
-        tgw::render_themed(&source, &mut buf, 0, format, scheme).ok()?;
+        tgw::render_themed(&source, &mut buf, 0, scheme).ok()?;
         String::from_utf8(buf).ok().map(Arc::<str>::from)
     });
     let svg = themed.clone().unwrap_or(svg);

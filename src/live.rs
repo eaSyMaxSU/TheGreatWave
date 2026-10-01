@@ -13,8 +13,6 @@ use std::time::{Duration, Instant};
 
 use notify::event::EventKind;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
-use tgw::InputFormat;
-
 const DEBOUNCE: Duration = Duration::from_millis(80);
 const READ_PAUSE: Duration = Duration::from_millis(15);
 pub(crate) const READ_SETTLE: Duration = Duration::from_millis(100);
@@ -27,17 +25,11 @@ pub(crate) struct Job {
     pub(crate) input: PathBuf,
     pub(crate) label: String,
     pub(crate) output: Option<Output>,
-    pub(crate) format: InputFormat,
     indent: u8,
 }
 
 impl Job {
-    pub(crate) fn new(
-        input: PathBuf,
-        output: Option<PathBuf>,
-        format: InputFormat,
-        indent: u8,
-    ) -> Result<Self, String> {
+    pub(crate) fn new(input: PathBuf, output: Option<PathBuf>, indent: u8) -> Result<Self, String> {
         match fs::metadata(&input) {
             Ok(meta) if meta.is_dir() => {
                 return Err(format!("{}: expected a diagram file", input.display()));
@@ -70,7 +62,6 @@ impl Job {
             label: input.display().to_string(),
             input,
             output: output.map(Output::new),
-            format,
             indent,
         })
     }
@@ -93,7 +84,7 @@ impl Job {
 
     fn render(&self, source: String, epoch: u64) -> Loaded {
         let mut buffer = Vec::new();
-        let svg = tgw::render_with_format(&source, &mut buffer, 0, self.format).and_then(|()| {
+        let svg = tgw::render_into(&source, &mut buffer).and_then(|()| {
             String::from_utf8(buffer).map_err(|_| tgw::Error {
                 offset: 0,
                 message: "svg was not utf-8".into(),
@@ -120,7 +111,7 @@ impl Job {
             crate::terminate(&mut bytes);
             return Ok(bytes);
         }
-        crate::render_file(source, self.format, self.indent)
+        crate::render_file(source, self.indent)
             .map_err(|error| crate::diagnostic(&self.label, source, &error))
     }
 }
@@ -733,7 +724,7 @@ mod tests {
         let output = dir.join("a.svg");
         fs::write(&input, "clk: p...\n").unwrap();
         age(&input);
-        let job = Job::new(input.clone(), Some(output.clone()), InputFormat::Auto, 2).unwrap();
+        let job = Job::new(input.clone(), Some(output.clone()), 2).unwrap();
         let fresh = job.load(1);
         assert!(fresh.stable);
         assert!(matches!(
@@ -744,7 +735,7 @@ mod tests {
                 ..
             }
         ));
-        let expected = crate::render_file("clk: p...\n", InputFormat::Auto, 2).unwrap();
+        let expected = crate::render_file("clk: p...\n", 2).unwrap();
         assert_eq!(fs::read(&output).unwrap(), expected);
         assert!(matches!(
             job.load(2).loaded,
@@ -790,18 +781,12 @@ mod tests {
         let input = dir.join("a.tgw");
         fs::write(&input, "clk: p\n").unwrap();
         let aliased = dir.join(".").join("a.tgw");
-        assert!(Job::new(input.clone(), Some(aliased), InputFormat::Auto, 0).is_err());
-        assert!(Job::new(dir.clone(), None, InputFormat::Auto, 0).is_err());
-        assert!(Job::new(input.clone(), Some(dir.clone()), InputFormat::Auto, 0).is_err());
-        assert!(Job::new(dir.join("typo.tgw"), None, InputFormat::Auto, 0).is_err());
-        assert!(Job::new(
-            input.clone(),
-            Some(dir.join("missing").join("a.svg")),
-            InputFormat::Auto,
-            0
-        )
-        .is_err());
-        assert!(Job::new(input, Some(dir.join("a.svg")), InputFormat::Auto, 0).is_ok());
+        assert!(Job::new(input.clone(), Some(aliased), 0).is_err());
+        assert!(Job::new(dir.clone(), None, 0).is_err());
+        assert!(Job::new(input.clone(), Some(dir.clone()), 0).is_err());
+        assert!(Job::new(dir.join("typo.tgw"), None, 0).is_err());
+        assert!(Job::new(input.clone(), Some(dir.join("missing").join("a.svg")), 0).is_err());
+        assert!(Job::new(input, Some(dir.join("a.svg")), 0).is_ok());
         let _ = fs::remove_dir_all(&dir);
     }
 

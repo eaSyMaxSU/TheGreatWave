@@ -28,22 +28,10 @@ WaveDrom by Aliaksei Chapyzhenka (Copyright 2011-2026), which is MIT licensed:
   https://wavedrom.com/
   https://github.com/wavedrom/wavedrom
 
-WaveJSON, the legacy diagram description read by this project, is specified
-with that work:
-
-  https://github.com/wavedrom/schema
-
-Legacy input accepts the JSON5 subset customary for WaveJSON. The JSON5
-project is MIT licensed:
-
-  https://spec.json5.org/
-  https://github.com/json5/json5
-
 SVG elliptical-arc endpoint-to-center conversion follows the SVG 2
 implementation notes:
 
   https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes
 
 The Rust sources in this repository are a separate implementation. Those
-references describe the diagram language, input syntax, and arc geometry this
-renderer follows.
+references describe the wave language and arc geometry this renderer follows.

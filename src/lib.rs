@@ -1,12 +1,10 @@
-//! The Great Wave renders native `.tgw` timing diagrams, ASM charts, HLS schedules, gate netlists, and WaveJSON to SVG.
+//! The Great Wave renders native `.tgw` timing diagrams, ASM charts, HLS schedules, and gate netlists to SVG.
 //!
 //! Copyright (c) 2026 eaSyMaxSU. Licensed under the MIT License; see `LICENSE`.
 //!
 //! Wave rules and the default palette come from WaveDrom
 //! (Copyright 2011–2026 Aliaksei Chapyzhenka, MIT):
 //! <https://wavedrom.com/>, <https://github.com/wavedrom/wavedrom>.
-//! WaveJSON: <https://github.com/wavedrom/schema>.
-//! JSON5 subset: <https://spec.json5.org/>.
 //! SVG arc geometry: <https://www.w3.org/TR/SVG2/implnote.html#ArcImplementationNotes>.
 #![forbid(unsafe_code)]
 
@@ -70,16 +68,12 @@ pub fn render_into(source: &str, out: &mut Vec<u8>) -> Result<(), Error> {
 }
 
 pub fn render_opts(source: &str, out: &mut Vec<u8>, indent: u8) -> Result<(), Error> {
-    render_with_format(source, out, indent, InputFormat::Auto)
-}
-
-/// Input syntax. Auto recognizes legacy JSON5 objects and native `.tgw` text.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum InputFormat {
-    #[default]
-    Auto,
-    Tgw,
-    Json5,
+    out.clear();
+    if let Err(e) = write_picture(&parse(source)?, out, indent, &scheme::LIGHT) {
+        out.clear();
+        return Err(e);
+    }
+    Ok(())
 }
 
 enum Picture {
@@ -89,33 +83,9 @@ enum Picture {
     Gtl(Box<gtl::Netlist>),
 }
 
-fn parse(source: &str, format: InputFormat) -> Result<Picture, Error> {
-    let trimmed = source.trim_start_matches('\u{feff}').trim_start();
-    let json = match format {
-        InputFormat::Auto => {
-            trimmed.starts_with(['{', '['])
-                || trimmed.starts_with("//")
-                || trimmed.starts_with("/*")
-        }
-        InputFormat::Json5 => true,
-        InputFormat::Tgw => false,
-    };
+fn parse(source: &str) -> Result<Picture, Error> {
     let source = source.strip_prefix('\u{feff}').unwrap_or(source);
-    if json {
-        match scan::parse(source) {
-            Ok(doc) => Ok(Picture::Wave(Box::new(doc))),
-            Err(error)
-                if matches!(format, InputFormat::Auto)
-                    && (trimmed.starts_with("//") || trimmed.starts_with("/*")) =>
-            {
-                Err(Error {
-                    offset: error.offset,
-                    message: format!("{}; a .tgw comment starts with #", error.message),
-                })
-            }
-            Err(error) => Err(error),
-        }
-    } else if gtl::starts_with_gtl(source) {
+    if gtl::starts_with_gtl(source) {
         gtl::parse(source).map(|net| Picture::Gtl(Box::new(net)))
     } else if hls::starts_with_hls(source) {
         hls::parse(source).map(|schedule| Picture::Hls(Box::new(schedule)))
@@ -126,32 +96,16 @@ fn parse(source: &str, format: InputFormat) -> Result<Picture, Error> {
     }
 }
 
-/// Clear and refill an output buffer, choosing input syntax explicitly.
-pub fn render_with_format(
-    source: &str,
-    out: &mut Vec<u8>,
-    indent: u8,
-    format: InputFormat,
-) -> Result<(), Error> {
-    out.clear();
-    if let Err(e) = write_picture(&parse(source, format)?, out, indent, &scheme::LIGHT) {
-        out.clear();
-        return Err(e);
-    }
-    Ok(())
-}
-
-/// Render `source` with `scheme`. File output uses [`render_with_format`], which
-/// is the light palette. A dark window calls this for the picture only.
+/// Render `source` with `scheme`. File output uses [`render_opts`], which is the
+/// light palette. A dark window calls this for the picture only.
 pub fn render_themed(
     source: &str,
     out: &mut Vec<u8>,
     indent: u8,
-    format: InputFormat,
     scheme: &'static scheme::Scheme,
 ) -> Result<(), Error> {
     out.clear();
-    if let Err(e) = write_picture(&parse(source, format)?, out, indent, scheme) {
+    if let Err(e) = write_picture(&parse(source)?, out, indent, scheme) {
         out.clear();
         return Err(e);
     }
@@ -172,14 +126,9 @@ fn write_picture(
     }
 }
 
-/// Convert JSON5 or native text to canonical, human-readable `.tgw` syntax.
+/// Reprint `source` as canonical, human-readable `.tgw` text.
 pub fn to_tgw(source: &str) -> Result<String, Error> {
-    to_tgw_with_format(source, InputFormat::Auto)
-}
-
-/// Convert a source with explicitly selected input syntax to `.tgw`.
-pub fn to_tgw_with_format(source: &str, format: InputFormat) -> Result<String, Error> {
-    Ok(match parse(source, format)? {
+    Ok(match parse(source)? {
         Picture::Wave(doc) => crate::format::write(&doc),
         Picture::Asm(chart) => crate::asm::write(&chart),
         Picture::Hls(schedule) => crate::hls::write(&schedule),

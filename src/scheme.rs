@@ -195,11 +195,11 @@ mod tests {
     fn light_render_is_the_file_and_dark_uses_its_own_tokens() {
         let file = crate::render(SAMPLE).unwrap();
         let mut buf = Vec::new();
-        crate::render_themed(SAMPLE, &mut buf, 0, crate::InputFormat::Auto, &LIGHT).unwrap();
+        crate::render_themed(SAMPLE, &mut buf, 0, &LIGHT).unwrap();
         assert_eq!(buf, file.as_bytes());
 
         buf.clear();
-        crate::render_themed(SAMPLE, &mut buf, 0, crate::InputFormat::Auto, &DARK).unwrap();
+        crate::render_themed(SAMPLE, &mut buf, 0, &DARK).unwrap();
         let dark = String::from_utf8(buf).unwrap();
         assert!(dark.contains("fill=\"#10151f\""));
         assert!(dark.contains("fill=\"#4b5d73\""));
@@ -210,7 +210,7 @@ mod tests {
         assert!(!dark.contains("#0f172a"));
         let again = {
             let mut out = Vec::new();
-            crate::render_themed(SAMPLE, &mut out, 0, crate::InputFormat::Auto, &DARK).unwrap();
+            crate::render_themed(SAMPLE, &mut out, 0, &DARK).unwrap();
             String::from_utf8(out).unwrap()
         };
         assert_eq!(again, dark);

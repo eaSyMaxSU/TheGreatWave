@@ -77,14 +77,7 @@ fn hls_schedules_are_pixel_aligned() {
 
     let schedule = fs::read_to_string(root.join("examples/hls.tgw")).unwrap();
     let mut dark = Vec::new();
-    tgw::render_themed(
-        &schedule,
-        &mut dark,
-        0,
-        tgw::InputFormat::Tgw,
-        &tgw::scheme::DARK,
-    )
-    .unwrap();
+    tgw::render_themed(&schedule, &mut dark, 0, &tgw::scheme::DARK).unwrap();
     let dark_svg = String::from_utf8(dark).unwrap();
     let dark_image = raster(&renderer, &dark_svg);
     assert_page_and_boxes(

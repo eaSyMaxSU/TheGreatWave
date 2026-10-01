@@ -3,31 +3,19 @@ use std::time::{Duration, Instant};
 
 fn main() {
     let clock = format!("p{}", ".".repeat(9_999));
-    let clock_src = format!("{{signal:[{{name:'clk',wave:'{clock}'}}]}}");
     let held = format!("1{}", ".".repeat(9_999));
-    let held_src = format!("{{signal:[{{name:'held',wave:'{held}'}}]}}");
 
     let mut bus = String::with_capacity(10_000);
     for i in 0..10_000 {
         bus.push(char::from(b'2' + (i % 8) as u8));
     }
-    let bus_src = format!("{{signal:[{{name:'bus',wave:'{}'}}]}}", &bus[..1_000]);
-    let cropped_src =
-        format!("{{signal:[{{name:'bus',wave:'{bus}'}}],config:{{hbounds:[4990,5010]}}}}");
 
     println!("Repeated release-mode renders; warmed caller-owned output buffer.");
-    measure("clock 10,000 cycles [JSON5]", &clock_src);
-    measure("clock 10,000 cycles [native]", &format!("clk: {clock}"));
-    measure("held 10,000 cycles [JSON5]", &held_src);
-    measure("held 10,000 cycles [native]", &format!("held: {held}"));
-    measure("bus 1,000 values [JSON5]", &bus_src);
+    measure("clock 10,000 cycles", &format!("clk: {clock}"));
+    measure("held 10,000 cycles", &format!("held: {held}"));
+    measure("bus 1,000 values", &format!("bus: {}", &bus[..1_000]));
     measure(
-        "bus 1,000 values [native]",
-        &format!("bus: {}", &bus[..1_000]),
-    );
-    measure("bus 10,000 values, 20 visible [JSON5]", &cropped_src);
-    measure(
-        "bus 10,000 values, 20 visible [native]",
+        "bus 10,000 values, 20 visible",
         &format!("@bounds 4990 5010\nbus: {bus}"),
     );
 }

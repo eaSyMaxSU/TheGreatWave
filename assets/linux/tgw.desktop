@@ -2,7 +2,7 @@
 Type=Application
 Name=The Great Wave
 GenericName=Timing Diagram Viewer
-Comment=Live view of a .tgw or WaveJSON timing diagram
+Comment=Live view of a .tgw diagram
 Exec=tgw --view %f
 Icon=tgw
 Terminal=false

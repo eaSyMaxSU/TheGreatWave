@@ -6,8 +6,6 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use tgw::InputFormat;
-
 #[cfg(all(test, feature = "view"))]
 mod asm_pixels;
 #[cfg(all(test, feature = "view"))]
@@ -28,18 +26,17 @@ The Great Wave — ASIC timing diagrams in a text language people and agents can
 
 Usage: tgw [OPTIONS] [INPUT]
 
-Renders a .tgw or WaveJSON diagram to SVG. With --watch or --view, tgw keeps
-running and brings the output file, and the window, up to date every time
-INPUT is saved.
+Renders a .tgw diagram to SVG. With --watch or --view, tgw keeps running
+and brings the output file, and the window, up to date every time INPUT
+is saved.
 
 Arguments:
-  INPUT                Diagram to read (.tgw or WaveJSON); omit or use - for stdin
+  INPUT                Diagram to read (.tgw); omit or use - for stdin
 
 Options:
   -i, --input PATH     Input file (alternative to positional INPUT)
   -o, --output PATH    Write output to a file; omit or use - for stdout
-      --format FORMAT  Input syntax: auto (default), tgw, or json5
-      --convert        Convert input to readable, canonical .tgw text
+      --convert        Reprint input as canonical .tgw text
   -t, --indent N       Indent SVG output by N spaces (default: compact)
   -w, --watch          Keep running and rewrite OUTPUT whenever INPUT is saved
       --view           Open a window that redraws whenever INPUT is saved;
@@ -66,8 +63,8 @@ Examples:
   tgw diagram.tgw -o diagram.svg --view
   tgw diagram.tgw -o diagram.svg --watch
   tgw diagram.tgw --view
-  tgw legacy.json5 --convert -o diagram.tgw
-  tgw --format tgw < diagram.tgw > diagram.svg
+  tgw diagram.tgw --convert
+  tgw < diagram.tgw > diagram.svg
 
 Language:
   One signal per line: name: wave => labels ; node=
@@ -98,7 +95,6 @@ enum Action {
 struct Options {
     input: Option<PathBuf>,
     output: Option<PathBuf>,
-    format: InputFormat,
     indent: u8,
     action: Action,
     watch: bool,
@@ -129,7 +125,6 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
     let mut config = Options {
         input: None,
         output: None,
-        format: InputFormat::Auto,
         indent: 0,
         action: Action::Render,
         watch: false,
@@ -160,7 +155,7 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
                 "--convert" if inline.is_none() => config.action = Action::Convert,
                 "-w" | "--watch" if inline.is_none() => config.watch = true,
                 "--view" if inline.is_none() => config.view = true,
-                "-i" | "--input" | "-o" | "--output" | "--format" | "-t" | "--indent" => {
+                "-i" | "--input" | "-o" | "--output" | "-t" | "--indent" => {
                     let value = match inline {
                         Some(value) => OsString::from(value),
                         None => args.next().ok_or_else(|| format!("{flag} needs a value"))?,
@@ -180,14 +175,6 @@ fn options(args: impl IntoIterator<Item = OsString>) -> Result<Options, String> 
                                 return Err("provide only one output file".into());
                             }
                             config.output = Some(value.into());
-                        }
-                        "--format" => {
-                            config.format = match value.to_str() {
-                                Some("auto") => InputFormat::Auto,
-                                Some("tgw") => InputFormat::Tgw,
-                                Some("json5") => InputFormat::Json5,
-                                _ => return Err("--format must be auto, tgw, or json5".into()),
-                            }
                         }
                         "-t" | "--indent" => {
                             config.indent = value
@@ -269,13 +256,13 @@ fn run() -> Result<(), String> {
         source
     };
     let output = if options.action == Action::Convert {
-        tgw::to_tgw_with_format(&source, options.format).map(|text| {
+        tgw::to_tgw(&source).map(|text| {
             let mut bytes = text.into_bytes();
             terminate(&mut bytes);
             bytes
         })
     } else {
-        render_file(&source, options.format, options.indent)
+        render_file(&source, options.indent)
     }
     .map_err(|e| diagnostic(&label, &source, &e))?;
     if let Some(path) = options.output.as_ref().filter(|p| p.as_os_str() != "-") {
@@ -290,7 +277,7 @@ fn live(options: Options) -> Result<(), String> {
     let input = options
         .input
         .ok_or("--watch and --view need an input file")?;
-    let job = live::Job::new(input, options.output, options.format, options.indent)?;
+    let job = live::Job::new(input, options.output, options.indent)?;
     if options.view {
         #[cfg(feature = "view")]
         return view::run(job);
@@ -306,9 +293,9 @@ fn live(_: Options) -> Result<(), String> {
 }
 
 /// The bytes `tgw INPUT -o OUTPUT` writes for a rendered diagram.
-fn render_file(source: &str, format: InputFormat, indent: u8) -> Result<Vec<u8>, tgw::Error> {
+fn render_file(source: &str, indent: u8) -> Result<Vec<u8>, tgw::Error> {
     let mut output = Vec::new();
-    tgw::render_with_format(source, &mut output, indent, format)?;
+    tgw::render_opts(source, &mut output, indent)?;
     terminate(&mut output);
     Ok(output)
 }
@@ -540,19 +527,11 @@ mod tests {
     }
 
     #[test]
-    fn positional_input_output_conversion_and_explicit_format() {
-        let parsed = parse(&[
-            "diagram.json5",
-            "--convert",
-            "-o",
-            "diagram.tgw",
-            "--format=json5",
-        ])
-        .unwrap();
-        assert_eq!(parsed.input, Some(PathBuf::from("diagram.json5")));
-        assert_eq!(parsed.output, Some(PathBuf::from("diagram.tgw")));
+    fn positional_input_output_and_conversion() {
+        let parsed = parse(&["diagram.tgw", "--convert", "-o", "out.tgw"]).unwrap();
+        assert_eq!(parsed.input, Some(PathBuf::from("diagram.tgw")));
+        assert_eq!(parsed.output, Some(PathBuf::from("out.tgw")));
         assert_eq!(parsed.action, Action::Convert);
-        assert!(matches!(parsed.format, InputFormat::Json5));
         assert_eq!(
             parse(&["--", "-named.tgw"]).unwrap().input,
             Some(PathBuf::from("-named.tgw"))
@@ -572,7 +551,6 @@ mod tests {
             vec!["a", "-i", "b"],
             vec!["-o", "a", "-o", "b"],
             vec!["--input"],
-            vec!["--format", "xml"],
             vec!["--indent", "-1"],
             vec!["--indent=256"],
             vec!["--unknown"],
@@ -595,7 +573,7 @@ mod tests {
             vec!["-", "--view"],
             vec!["a.tgw", "-o", "-", "--watch"],
             vec!["a.tgw", "--view", "-o", "-"],
-            vec!["a.json5", "--convert", "-o", "a.tgw", "--watch"],
+            vec!["a.tgw", "--convert", "-o", "b.tgw", "--watch"],
             vec!["a.tgw", "--view=yes"],
         ] {
             assert!(parse(&args).is_err(), "{args:?}");
@@ -608,7 +586,6 @@ mod tests {
         for flag in [
             "--input",
             "--output",
-            "--format",
             "--convert",
             "--indent",
             "--watch",

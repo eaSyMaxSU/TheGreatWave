@@ -637,7 +637,7 @@ mod tests {
         let source = include_str!("../examples/transfer.tgw");
         let light = tgw::render(source).unwrap();
         let mut buf = Vec::new();
-        tgw::render_themed(source, &mut buf, 0, tgw::InputFormat::Auto, &scheme::DARK).unwrap();
+        tgw::render_themed(source, &mut buf, 0, &scheme::DARK).unwrap();
         let dark = String::from_utf8(buf).unwrap();
         assert_eq!(diagram_frame(&light), diagram_frame(&dark));
         assert!(dark.contains("fill=\"#10151f\""));
