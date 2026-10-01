@@ -1,0 +1,4 @@
+@gtl
+and a b -> p
+not p -> q
+or q c -> r

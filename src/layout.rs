@@ -73,7 +73,9 @@ pub(crate) fn diagram_frame(svg: &str) -> Option<Frame> {
     let (width, height) = svg_size(svg)?;
     let root_end = svg.find('>')?;
     let root = &svg[..root_end];
-    let unified = root.contains("class=\"tgw asm\"") || root.contains("class=\"tgw hls\"");
+    let unified = root.contains("class=\"tgw asm\"")
+        || root.contains("class=\"tgw hls\"")
+        || root.contains("class=\"tgw gtl\"");
     let defs = svg.find("</defs>")?;
     let rest = &svg[defs..];
     let key = "transform=\"translate(";
@@ -87,7 +89,7 @@ pub(crate) fn diagram_frame(svg: &str) -> Option<Frame> {
     let y: f32 = parts.next()?.parse().ok()?;
     let gutter = (x - 0.5).max(0.0);
     let (mut x0, mut y0, mut x1, mut y1) = content_bounds(svg, x, y, width, height);
-    // A chart or schedule is scaled by a whole number. The window has to start
+    // A chart, schedule, or netlist is scaled by a whole number. The window has to start
     // and end on SVG pixels, or that scale paints a 1px edge across two device
     // pixels.
     if unified {
@@ -688,6 +690,31 @@ mod tests {
         .unwrap();
         assert!(whole.contains("s0"));
         assert!(whole.contains("/1"));
+        let tight = layout_diagram(&frame, 120.0, 80.0, 0.0, 0.0).unwrap();
+        assert!((tight.scale - 1.0).abs() < 0.01);
+        assert!(tight.show_h && tight.show_v);
+    }
+
+    #[test]
+    fn gtl_netlist_scrolls_as_one_picture() {
+        let svg = tgw::render(include_str!("../examples/gtl.tgw")).unwrap();
+        let frame = diagram_frame(&svg).unwrap();
+        assert!(frame.unified);
+        let fitted = layout_diagram(&frame, 2000.0, 1600.0, 0.0, 0.0).unwrap();
+        assert_eq!(fitted.label_w, 0.0);
+        assert!(fitted.scale >= 1.0);
+        assert_eq!(fitted.scale.fract(), 0.0);
+        assert!(!fitted.show_h && !fitted.show_v);
+        let whole = slice_svg(
+            &svg,
+            fitted.wave.x,
+            fitted.wave.y,
+            fitted.wave.w,
+            fitted.wave.h,
+        )
+        .unwrap();
+        assert!(whole.contains(">XOR</text>"));
+        assert!(whole.contains(">MUX</text>"));
         let tight = layout_diagram(&frame, 120.0, 80.0, 0.0, 0.0).unwrap();
         assert!((tight.scale - 1.0).abs() < 0.01);
         assert!(tight.show_h && tight.show_v);

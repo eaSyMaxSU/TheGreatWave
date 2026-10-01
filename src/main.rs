@@ -11,6 +11,8 @@ use tgw::InputFormat;
 #[cfg(all(test, feature = "view"))]
 mod asm_pixels;
 #[cfg(all(test, feature = "view"))]
+mod gtl_pixels;
+#[cfg(all(test, feature = "view"))]
 mod hls_pixels;
 #[cfg(feature = "view")]
 mod layout;
@@ -81,6 +83,8 @@ Language:
   0 continues down and 1 leaves to the right.
   A file that starts with @hls is a schedule. Time runs down, one band per cycle.
   !N keeps that unit busy for N cycles.
+  A file that starts with @gtl is a gate netlist. Signals run left to right.
+  not takes one input, mux takes a select and two data inputs, and the rest take two.
 ";
 
 #[derive(Debug, PartialEq, Eq)]

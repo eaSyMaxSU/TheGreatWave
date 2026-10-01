@@ -694,6 +694,126 @@ fn hls_edge_cases_are_errors() {
 }
 
 #[test]
+fn gtl_edge_cases_render_and_round_trip() {
+    let dir = root().join("tests/fixtures/gtl");
+    let mut paths: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "tgw"))
+        .collect();
+    paths.sort();
+    assert!(paths.len() >= 17, "{paths:?}");
+    let one = tgw::render(&fs::read_to_string(dir.join("one.tgw")).unwrap()).unwrap();
+    let example =
+        tgw::render(&fs::read_to_string(root().join("examples/gtl.tgw")).unwrap()).unwrap();
+    for path in &paths {
+        let source = fs::read_to_string(path).unwrap();
+        let name = path.file_stem().unwrap().to_string_lossy();
+        let svg = tgw::render(&source).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(svg.contains("class=\"tgw gtl\""), "{name}");
+        assert!(svg.contains("translate(8,8)"), "{name}");
+        assert!(!svg.contains("<g><rect"), "{name} label pill");
+        assert_integer_geometry(&svg, &name);
+        let converted = tgw::to_tgw(&source).unwrap();
+        assert_eq!(tgw::render(&converted).unwrap(), svg, "{name} convert");
+        assert_eq!(tgw::to_tgw(&converted).unwrap(), converted, "{name} stable");
+        let crlf = source.replace('\n', "\r\n");
+        assert_eq!(tgw::render(&crlf).unwrap(), svg, "{name} crlf");
+        let mut dark = Vec::new();
+        tgw::render_themed(
+            &source,
+            &mut dark,
+            0,
+            tgw::InputFormat::Tgw,
+            &tgw::scheme::DARK,
+        )
+        .unwrap();
+        let dark = String::from_utf8(dark).unwrap();
+        if svg.contains("\"#000\"") {
+            assert!(dark.contains(tgw::scheme::DARK.ink), "{name}");
+        }
+        assert!(dark.contains(tgw::scheme::DARK.paper), "{name}");
+        assert_eq!(
+            dark.matches("<rect ").count(),
+            svg.matches("<rect ").count(),
+            "{name} dark geometry"
+        );
+    }
+    assert_eq!(
+        tgw::render(&fs::read_to_string(dir.join("comments.tgw")).unwrap()).unwrap(),
+        one
+    );
+    assert_eq!(
+        tgw::render(&fs::read_to_string(dir.join("wide.tgw")).unwrap()).unwrap(),
+        example
+    );
+    assert!(example.contains(">XOR</text>"), "{example}");
+    assert!(example.contains(">NOT</text>"), "{example}");
+    assert!(example.contains(">MUX</text>"), "{example}");
+    let nand = tgw::render(&fs::read_to_string(dir.join("nand.tgw")).unwrap()).unwrap();
+    let and = tgw::render(&fs::read_to_string(dir.join("one.tgw")).unwrap()).unwrap();
+    assert_ne!(
+        nand.matches("<rect ").count(),
+        and.matches("<rect ").count(),
+        "nand adds an invert square"
+    );
+}
+
+#[test]
+fn gtl_edge_cases_are_errors() {
+    let cases = [
+        ("@gtl extra\n", "@gtl takes no arguments"),
+        ("@gtl\n@end\n", "@end is not used"),
+        ("@gtl\n@asm\n", "@asm is not used"),
+        ("@gtl\n@hls\n", "@hls is not used"),
+        ("@gtl\n@wvf\n", "@wvf is not used"),
+        ("@gtl\n@nope\n", "unknown directive"),
+        (
+            "@gtl\nand a b -> y\n@title later\n",
+            "directives belong before",
+        ),
+        ("@gtl\nbuf a -> y\n", "unknown gate"),
+        (
+            "@gtl\nbuf a -> y\n",
+            "and, or, not, nand, nor, xor, xnor, mux",
+        ),
+        ("@gtl\nand a -> y\n", "takes 2 inputs"),
+        ("@gtl\nnot a b -> y\n", "takes 1 input"),
+        ("@gtl\nmux s a -> y\n", "takes 3 inputs"),
+        ("@gtl\nnot a -> y z\n", "takes 1 output"),
+        ("@gtl\nand a b -> y\nor c d -> y\n", "duplicate result"),
+        ("@gtl\nand d a -> y\nnot b -> d\n", "not defined yet"),
+        ("@gtl\nand a y -> y\n", "own output"),
+        ("@gtl\nand b x -> a\nand a y -> b\n", "not defined yet"),
+        ("@gtl\nand a b c d e f g h i -> y\n", "exceeds 8 inputs"),
+        ("@gtl\nnot a -> b c d e f g h i j\n", "exceeds 8 outputs"),
+    ];
+    for (source, needle) in cases {
+        let error = tgw::render(source).unwrap_err();
+        assert!(
+            error.message.contains(needle),
+            "{source:?} -> {}",
+            error.message
+        );
+        assert!(error.offset <= source.len(), "{source:?}");
+    }
+
+    let mut deep = String::from("@gtl\nand a b -> s0\n");
+    for i in 1..=64 {
+        deep.push_str(&format!("not s{} -> s{}\n", i - 1, i));
+    }
+    let error = tgw::render(&deep).unwrap_err();
+    assert!(error.message.contains("64"), "{}", error.message);
+
+    let mut many = String::from("@gtl\n");
+    for i in 0..257 {
+        many.push_str(&format!("and a b -> s{i}\n"));
+    }
+    let error = tgw::render(&many).unwrap_err();
+    assert!(error.message.contains("256"), "{}", error.message);
+}
+
+#[test]
 fn malformed_utf8_source_fragments_are_bounded() {
     let alphabet = [
         '{', '}', '[', ']', '\"', '\\', '/', '*', ':', ',', '.', '+', '-', '0', '1', 'e', 'a', ' ',

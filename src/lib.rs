@@ -1,4 +1,4 @@
-//! The Great Wave renders native `.tgw` timing diagrams, ASM charts, HLS schedules, and WaveJSON to SVG.
+//! The Great Wave renders native `.tgw` timing diagrams, ASM charts, HLS schedules, gate netlists, and WaveJSON to SVG.
 //!
 //! Copyright (c) 2026 eaSyMaxSU. Licensed under the MIT License; see `LICENSE`.
 //!
@@ -16,6 +16,9 @@ mod asm_layout;
 mod emit;
 mod format;
 mod geom;
+mod gtl;
+mod gtl_emit;
+mod gtl_layout;
 mod hls;
 mod hls_emit;
 mod hls_layout;
@@ -83,6 +86,7 @@ enum Picture {
     Wave(Box<scan::Doc>),
     Asm(Box<asm::Chart>),
     Hls(Box<hls::Schedule>),
+    Gtl(Box<gtl::Netlist>),
 }
 
 fn parse(source: &str, format: InputFormat) -> Result<Picture, Error> {
@@ -111,6 +115,8 @@ fn parse(source: &str, format: InputFormat) -> Result<Picture, Error> {
             }
             Err(error) => Err(error),
         }
+    } else if gtl::starts_with_gtl(source) {
+        gtl::parse(source).map(|net| Picture::Gtl(Box::new(net)))
     } else if hls::starts_with_hls(source) {
         hls::parse(source).map(|schedule| Picture::Hls(Box::new(schedule)))
     } else if asm::starts_with_asm(source) {
@@ -162,6 +168,7 @@ fn write_picture(
         Picture::Wave(doc) => emit::write_themed(doc, out, indent, scheme),
         Picture::Asm(chart) => asm_emit::write(chart, out, indent, scheme),
         Picture::Hls(schedule) => hls_emit::write(schedule, out, indent, scheme),
+        Picture::Gtl(net) => gtl_emit::write(net, out, indent, scheme),
     }
 }
 
@@ -176,6 +183,7 @@ pub fn to_tgw_with_format(source: &str, format: InputFormat) -> Result<String, E
         Picture::Wave(doc) => crate::format::write(&doc),
         Picture::Asm(chart) => crate::asm::write(&chart),
         Picture::Hls(schedule) => crate::hls::write(&schedule),
+        Picture::Gtl(net) => crate::gtl::write(&net),
     })
 }
 

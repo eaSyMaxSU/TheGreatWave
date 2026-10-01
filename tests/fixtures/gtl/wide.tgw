@@ -1,0 +1,6 @@
+@gtl
+@title Select and invert
+
+    xor   a   b   ->   d
+  not d -> nd
+      mux nd a b -> y

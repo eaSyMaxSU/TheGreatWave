@@ -2,15 +2,16 @@
 
 <img src="assets/icon/tgw.svg" width="88" height="88" align="right" alt="The Great Wave icon">
 
-`tgw` turns a text file into a compact SVG. One binary draws three pictures. The rendering library has no dependencies.
+`tgw` turns a text file into a compact SVG. One binary draws four pictures. The rendering library has no dependencies.
 
 | First directive | Picture | SVG root class | Example |
 | --- | --- | --- | --- |
 | `@wvf` | Timing diagram | `class="tgw"` | `examples/transfer.tgw` |
 | `@asm` | Algorithmic state machine chart | `class="tgw asm"` | `examples/asm.tgw` |
 | `@hls` | High-level synthesis schedule | `class="tgw hls"` | `examples/hls.tgw` |
+| `@gtl` | Gate-level netlist | `class="tgw gtl"` | `examples/gtl.tgw` |
 
-The first non-comment directive chooses the picture. `#` is a comment. `//` is not. A file is one picture: do not mix `@wvf`, `@asm`, and `@hls`. The text describes the picture. It does not store coordinates, and a schedule does not store operator counts. A timing diagram that omits `@wvf` still renders, and `--convert` writes `@wvf` at the top.
+The first non-comment directive chooses the picture. `#` is a comment. `//` is not. A file is one picture: do not mix `@wvf`, `@asm`, `@hls`, and `@gtl`. The text describes the picture. It does not store coordinates, wire routes, or operator counts. A timing diagram that omits `@wvf` still renders, and `--convert` writes `@wvf` at the top.
 
 ```text
 @wvf
@@ -28,12 +29,12 @@ acknowledge: 1.....|01.
 
 ## Writing a file
 
-1. Pick the row in the table above. Put `@wvf`, `@asm`, or `@hls` on the first non-comment line, alone.
-2. Copy the matching example, then replace the names. `@title` and `@footer` work in all three.
+1. Pick the row in the table above. Put `@wvf`, `@asm`, `@hls`, or `@gtl` on the first non-comment line, alone.
+2. Copy the matching example, then replace the names. `@title` and `@footer` work in all four.
 3. Check it: `tgw FILE` prints SVG, and `tgw FILE --convert` prints the canonical text. A bad file exits with `path:line:col: message` and a byte offset inside the message from the library.
-4. Leave layout to the renderer. Indentation matters only inside `@asm` and `@hls`.
+4. Leave layout to the renderer. Indentation matters only inside `@asm` and `@hls`. A gate netlist ignores indent.
 
-Quotes are the same in all three. A token that contains a space, `#`, a quote, or a backslash is written `"like this"`. Escapes are `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, and `\uXXXX`. Unicode can also be written directly.
+Quotes are the same in all four. A token that contains a space, `#`, a quote, or a backslash is written `"like this"`. Escapes are `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, and `\uXXXX`. Unicode can also be written directly.
 
 ## Render
 
@@ -42,6 +43,7 @@ cargo build --release
 ./target/release/tgw examples/transfer.tgw -o transfer.svg
 ./target/release/tgw examples/asm.tgw -o asm.svg
 ./target/release/tgw examples/hls.tgw -o hls.svg
+./target/release/tgw examples/gtl.tgw -o gtl.svg
 ./target/release/tgw < examples/transfer.tgw > transfer.svg
 ```
 
@@ -57,9 +59,10 @@ WaveJSON and JSON5 still render as timing diagrams. The syntax is detected autom
 ./target/release/tgw old-diagram.json5 --convert -o diagram.tgw
 ./target/release/tgw examples/asm.tgw --convert
 ./target/release/tgw examples/hls.tgw --convert
+./target/release/tgw examples/gtl.tgw --convert
 ```
 
-`--convert` reprints a timing diagram starting with `@wvf` and aligned columns, an ASM chart at a 2-space indent, and an HLS schedule with every cycle header filled in. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out. `--convert` cannot be combined with `--watch` or `--view`.
+`--convert` reprints a timing diagram starting with `@wvf` and aligned columns, an ASM chart at a 2-space indent, an HLS schedule with every cycle header filled in, and a gate netlist as `@gtl` followed by one gate per line. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out. `--convert` cannot be combined with `--watch` or `--view`.
 
 ## Watch and view
 
@@ -69,6 +72,7 @@ WaveJSON and JSON5 still render as timing diagrams. The syntax is detected autom
 ./target/release/tgw examples/transfer.tgw -o transfer.svg --watch  # file only
 ./target/release/tgw examples/asm.tgw --view                        # chart, same window
 ./target/release/tgw examples/hls.tgw --view                        # schedule, same window
+./target/release/tgw examples/gtl.tgw --view                        # netlist, same window
 ```
 
 `--view` opens a window. `--watch` does not. Both keep running, and every save of the input refreshes the picture. With `-o`, the file is refreshed too.
@@ -79,7 +83,7 @@ The output is the same bytes as a one-off render with the same `--indent` and `-
 
 A syntax error, a missing file, or a write that fails leaves the last good picture in place. A diagram error is reported as `path:line:col: message`. A write error is the operating-system error. The window shows it in the status bar; `--watch` prints it on stderr. A failed write is tried again at the next poll. Ctrl-W or Ctrl-Q closes the window (Command on macOS). `--watch` stops on Ctrl-C.
 
-In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. An `@asm` chart or an `@hls` schedule is the same window with no name column: the whole picture scrolls, and both bars appear when it does not fit. When that picture fits, it is scaled by a whole number so each SVG pixel stays a whole device pixel. When it does not fit, the scale stays 1 and both scrollbars appear.
+In the window, signal names stay fixed. The title, tick numbers, and waveforms scroll together. An `@asm` chart, an `@hls` schedule, or a `@gtl` netlist is the same window with no name column: the whole picture scrolls, and both bars appear when it does not fit. When that picture fits, it is scaled by a whole number so each SVG pixel stays a whole device pixel. When it does not fit, the scale stays 1 and both scrollbars appear.
 
 Use the wheel or trackpad, and hold Shift to scroll sideways. Drag a scrollbar thumb, or click the track to move by most of the view. Bars appear only when the diagram overflows. A diagram that fits is enlarged until it fills the window, with the same small padding on every edge. A short diagram opens in a window snug to the drawing. A later resize is kept, and the extra room becomes padding. A waveform wider than the window scrolls horizontally. A taller diagram scrolls vertically. A tick label that would be cut in half is left out until it fits. `@bounds` still decides which cycles are drawn.
 
@@ -89,7 +93,7 @@ The saved SVG stays compact: a long clock is one pattern, and an unknown value i
 
 ## Timing diagrams
 
-A file whose first directive is `@wvf` is a timing diagram. `@wvf` takes no arguments. One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. Indentation does not matter. Do not start the file with `@asm` or `@hls`.
+A file whose first directive is `@wvf` is a timing diagram. `@wvf` takes no arguments. One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. Indentation does not matter. Do not start the file with `@asm`, `@hls`, or `@gtl`.
 
 Labels come after `=>`, separated by spaces. Quote a label that contains a space, `#`, `;`, a quote, or `=>`.
 
@@ -109,7 +113,7 @@ Labels come after `=>`, separated by spaces. Quote a label that contains a space
 
 A node is one letter in the mask: `.` skips a cycle, and `[setup]` names that one cycle with a word. An uppercase letter is drawn without a label. `@edge setup~>hold "tSU"` connects two names. A missing name or an unknown connector is an error, and the message lists the nodes or the connectors.
 
-`@group Name` and `@end` nest, up to 64 deep. `@group` with no name draws an unlabeled bracket. `@end` closes the nearest group. It is not used in an ASM chart or an HLS schedule.
+`@group Name` and `@end` nest, up to 64 deep. `@group` with no name draws an unlabeled bracket. `@end` closes the nearest group. It is not used in an ASM chart, an HLS schedule, or a gate netlist.
 
 | Option | Effect |
 | --- | --- |
@@ -274,13 +278,49 @@ Quoted names and constants:
 
 An unquoted integer is a constant. A quoted integer is a name, so `"1"` is not the constant `1`.
 
+## Gate netlists
+
+A file whose first directive is `@gtl` is a gate-level netlist. Signals run left to right. A box is one gate. Its label is the function. Inputs land on the left border, top to bottom in source order. The output leaves the right border. A name that no gate writes is a primary input and enters from the left. A result that no gate reads is a live-out and ends in a short stub on the right. A later gate reads an earlier result through a 1px orthogonal wire in the gap between columns. Indentation does not change the picture. `#` comments, `@title`, and `@footer` work as they do on a timing diagram. `@end`, `@asm`, `@hls`, and `@wvf` are not used.
+
+`examples/gtl.tgw`:
+
+```text
+@gtl
+@title Select and invert
+
+xor a b -> d
+not d -> nd
+mux nd a b -> y
+```
+
+`xor` and `not` form a chain. `mux` takes the select first (`nd`), then the two data inputs (`a`, `b`). `y` is the live-out. `a` and `b` are primary inputs.
+
+Each gate line is `kind inputs -> output`. The kind decides how many inputs are legal. The parser asks the kind, so the line is not fixed at two operands. The owned model stores `inputs` and `outputs` as lists. Every kind has one output today. A later kind with more ports is a new kind and a new count, not a new placer.
+
+| Kind | Inputs | Output |
+| --- | --- | --- |
+| `and`, `or`, `xor` | two | one |
+| `nand`, `nor`, `xnor` | two, and a filled square on the output | one |
+| `not` | one, and a filled square on the output | one |
+| `mux` | select, then two data inputs | one |
+
+`not a -> y`. `mux s a b -> y`. `and a b -> y`. Operands are names or integer tie-offs (`0`, `1`, `-1`). A quoted integer stays a name, so `"1"` is not the constant `1`. Quotes and escapes match timing labels.
+
+A result used before it is defined, including a loop or a gate that reads its own output, is an error, and the message lists the results defined so far. Defining the same result twice is `duplicate result "y"`. An unknown kind lists `and, or, not, nand, nor, xor, xnor, mux`. The wrong number of inputs names the count that kind takes.
+
+`--convert` reprints `@gtl`, then the title and footer, then one gate per line in source order. Extra indent is dropped.
+
+Caps: 256 gates, logic depth 64, and 8 inputs or 8 outputs on one gate. Depth is one forward walk: a gate's column is one past the deepest gate that drives it, and primary inputs are not gates. `@gtl` takes no arguments. A directive after the first gate is `directives belong before the gates`.
+
+When generating a netlist: one short line per gate, the kind's inputs in port order, and a fresh result name. Do not store coordinates or wire routes.
+
 ## Picture
 
 Bus transitions cross at the same point, and a label is centered on the visible part of its value. A gap clears the trace underneath it. Each SVG has a title, a description, and paint ids that belong to that document only. There is no global stylesheet, so several diagrams can sit on one page.
 
 A long clock is one shared pattern. A long hold is one stroke. `@bounds` drops geometry outside the window, including annotations, instead of emitting it and hiding it. `render_into` reuses the caller's buffer. Text is measured against a conservative sans-serif, so a label's exact width can differ slightly by platform.
 
-ASM boxes and HLS boxes sit on a pixel grid. Text plus padding is snapped outward to 4px. The border is a filled ink ring with a paper rectangle inset by 1px, so a 1px edge stays on whole pixels. HLS cycle rules and value wires are 1px filled rectangles. Text is the only antialiased paint. The root transform is `translate(8,8)`.
+ASM boxes, HLS boxes, and gate boxes sit on a pixel grid. Text plus padding is snapped outward to 4px. The border is a filled ink ring with a paper rectangle inset by 1px, so a 1px edge stays on whole pixels. A gate grows taller as its input count grows, so each port stays on its own border pixel. `NOT`, `NAND`, `NOR`, and `XNOR` add a filled square on the output border. HLS cycle rules and the wires in a schedule or a netlist are 1px filled rectangles. Text is the only antialiased paint. The root transform is `translate(8,8)`.
 
 ```sh
 cargo run --release --example long_wave
@@ -298,7 +338,7 @@ let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 # Ok::<(), tgw::Error>(())
 ```
 
-`render`, `render_into`, and `to_tgw` accept all three pictures. `render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_with_format` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
+`render`, `render_into`, and `to_tgw` accept all four pictures. `render_opts` indents the SVG. `render_with_format` and `to_tgw_with_format` take `InputFormat::Auto`, `Tgw`, or `Json5`. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_with_format` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
 A program that only renders can depend on the library with `default-features = false`.
 
@@ -355,9 +395,9 @@ cargo doc --locked --no-deps
 cargo build --locked --release
 ```
 
-The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. The default `cargo test --locked` and the release run include the 1:1 screenshot checks for ASM charts and HLS schedules.
+The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. The default `cargo test --locked` and the release run include the 1:1 screenshot checks for ASM charts, HLS schedules, and gate netlists.
 
-`tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/fixtures/asm/` and `tests/fixtures/hls/` hold one edge case per file, plus `tests/fixtures/asm.tgw` and `tests/fixtures/hls.tgw`. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, including the chart and the schedule, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
+`tests/fixtures` holds native diagrams and their SVG snapshots. The original eight also have JSON5 twins in `tests/fixtures/legacy` and must render identically, including under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/fixtures/asm/`, `tests/fixtures/hls/`, and `tests/fixtures/gtl/` hold one edge case per file, plus `tests/fixtures/asm.tgw`, `tests/fixtures/hls.tgw`, and `tests/fixtures/gtl.tgw`. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, including the chart, the schedule, and the netlist, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
 
 ```sh
 UPDATE_SNAPSHOTS=1 cargo test --test render snapshots
