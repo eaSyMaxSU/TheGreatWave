@@ -4,6 +4,11 @@ use std::fmt::Write;
 
 pub(crate) fn write(doc: &Doc) -> String {
     let mut out = String::new();
+    directive_line(
+        &mut out,
+        doc.notes.wvf.as_ref().unwrap_or(&Remark::default()),
+        "@wvf",
+    );
     caption(&mut out, &doc.head, false, doc.xmin, &doc.notes);
     caption(&mut out, &doc.foot, true, doc.xmin, &doc.notes);
     if doc.hscale != 1 || !doc.notes.scale.is_empty() {
@@ -374,7 +379,7 @@ mod tests {
     #[test]
     fn conversion_keeps_groups_metadata_and_escaped_labels() {
         let doc = crate::scan::parse(r#"{signal:[['bus',{name:'a:b',wave:'2.',data:['line\n\"two\"'],node:'a.'},null],{name:'analog',wave:['pw',{d:'M0,0 L1,1'}],period:2,phase:.5}],edge:['a~>b delay'],head:{text:'demo'}}"#).unwrap();
-        assert_eq!(write(&doc), "@title demo\n\n@group bus\n  \"a:b\": 2. => \"line\\n\\\"two\\\"\" ; node=a.\n  ---\n@end\nanalog:  path M0,0 L1,1 ; period=2 ; phase=0.5\n\n@edge a~>b delay\n");
+        assert_eq!(write(&doc), "@wvf\n@title demo\n\n@group bus\n  \"a:b\": 2. => \"line\\n\\\"two\\\"\" ; node=a.\n  ---\n@end\nanalog:  path M0,0 L1,1 ; period=2 ; phase=0.5\n\n@edge a~>b delay\n");
     }
 
     #[test]
@@ -382,7 +387,7 @@ mod tests {
         let doc = crate::scan::parse("{signal:[],head:{tick:0,tock:'2 0.010'},foot:{tick:['zero','one']},config:{hbounds:[2,5]}}").unwrap();
         assert_eq!(
             write(&doc),
-            "@tick 0\n@tock 0.02 0.010\n@foot-tick \"zero\" \"one\"\n@bounds 2 5\n@empty\n"
+            "@wvf\n@tick 0\n@tock 0.02 0.010\n@foot-tick \"zero\" \"one\"\n@bounds 2 5\n@empty\n"
         );
     }
 }

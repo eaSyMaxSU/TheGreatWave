@@ -1,4 +1,5 @@
 # Edit the aligned waveforms; every symbol is one time unit.
+@wvf
 @title Bus transfer
 @tick 0
 @footer Request / acknowledge handshake

@@ -46,6 +46,15 @@ pub(crate) fn parse(source: &str) -> Result<Doc, Error> {
             let value = value.trim();
             let value_at = byte_at(line, at, value);
             match key {
+                "wvf" => {
+                    if !value.is_empty() {
+                        return Err(error("@wvf takes no arguments"));
+                    }
+                    if doc.notes.wvf.is_some() {
+                        return Err(error("duplicate @wvf"));
+                    }
+                    doc.notes.wvf = Some(remark);
+                }
                 "empty" => {
                     if !value.is_empty() {
                         return Err(error("@empty takes no arguments"));
@@ -678,6 +687,28 @@ mod tests {
 
     #[test]
     fn comments_round_trip_and_edges_must_land() {
+        let marked = "@wvf\nclk: p...\n";
+        let plain = "clk: p...\n";
+        assert_eq!(
+            crate::render(marked).unwrap(),
+            crate::render(plain).unwrap()
+        );
+        let canonical = crate::to_tgw(plain).unwrap();
+        assert!(canonical.starts_with("@wvf\n"), "{canonical}");
+        assert_eq!(crate::to_tgw(marked).unwrap(), canonical);
+        let extra = crate::render("@wvf extra\n").unwrap_err();
+        assert!(
+            extra.message.contains("takes no arguments"),
+            "{}",
+            extra.message
+        );
+        let duplicate = crate::render("@wvf\n@wvf\n").unwrap_err();
+        assert!(
+            duplicate.message.contains("duplicate @wvf"),
+            "{}",
+            duplicate.message
+        );
+
         let source = "# protocol\n@title Transfer\nclk: p... # clock\n# done\n";
         let converted = crate::to_tgw(source).unwrap();
         assert!(converted.contains("# protocol"), "{converted}");

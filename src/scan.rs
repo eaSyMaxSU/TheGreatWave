@@ -39,6 +39,7 @@ impl Default for Doc {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Notes {
+    pub wvf: Option<Remark>,
     pub title: Remark,
     pub footer: Remark,
     pub tick: Remark,

@@ -6,13 +6,14 @@
 
 | First directive | Picture | SVG root class | Example |
 | --- | --- | --- | --- |
-| anything else, including a signal line | Timing diagram | `class="tgw"` | `examples/transfer.tgw` |
+| `@wvf` | Timing diagram | `class="tgw"` | `examples/transfer.tgw` |
 | `@asm` | Algorithmic state machine chart | `class="tgw asm"` | `examples/asm.tgw` |
 | `@hls` | High-level synthesis schedule | `class="tgw hls"` | `examples/hls.tgw` |
 
-The first non-comment directive chooses the picture. `#` is a comment. `//` is not. A file is one picture: do not mix signal lines, `@asm`, and `@hls`. The text describes the picture. It does not store coordinates, and a schedule does not store operator counts.
+The first non-comment directive chooses the picture. `#` is a comment. `//` is not. A file is one picture: do not mix `@wvf`, `@asm`, and `@hls`. The text describes the picture. It does not store coordinates, and a schedule does not store operator counts. A timing diagram that omits `@wvf` still renders, and `--convert` writes `@wvf` at the top.
 
 ```text
+@wvf
 @title Bus transfer
 @tick 0
 
@@ -27,7 +28,7 @@ acknowledge: 1.....|01.
 
 ## Writing a file
 
-1. Pick the row in the table above. Put that directive on the first non-comment line, alone.
+1. Pick the row in the table above. Put `@wvf`, `@asm`, or `@hls` on the first non-comment line, alone.
 2. Copy the matching example, then replace the names. `@title` and `@footer` work in all three.
 3. Check it: `tgw FILE` prints SVG, and `tgw FILE --convert` prints the canonical text. A bad file exits with `path:line:col: message` and a byte offset inside the message from the library.
 4. Leave layout to the renderer. Indentation matters only inside `@asm` and `@hls`.
@@ -58,7 +59,7 @@ WaveJSON and JSON5 still render as timing diagrams. The syntax is detected autom
 ./target/release/tgw examples/hls.tgw --convert
 ```
 
-`--convert` reprints a timing diagram in aligned columns, an ASM chart at a 2-space indent, and an HLS schedule with every cycle header filled in. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out. `--convert` cannot be combined with `--watch` or `--view`.
+`--convert` reprints a timing diagram starting with `@wvf` and aligned columns, an ASM chart at a 2-space indent, and an HLS schedule with every cycle header filled in. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. JSON comments and unsupported JSON properties are left out. `--convert` cannot be combined with `--watch` or `--view`.
 
 ## Watch and view
 
@@ -88,11 +89,12 @@ The saved SVG stays compact: a long clock is one pattern, and an unknown value i
 
 ## Timing diagrams
 
-A timing diagram is the default. One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. Indentation does not matter. Do not start the file with `@asm` or `@hls`.
+A file whose first directive is `@wvf` is a timing diagram. `@wvf` takes no arguments. One signal per line, `name: wave`. Names may contain spaces and ranges, as in `data [7:0]`. A blank line is ignored. `---` inserts an empty lane. Indentation does not matter. Do not start the file with `@asm` or `@hls`.
 
 Labels come after `=>`, separated by spaces. Quote a label that contains a space, `#`, `;`, a quote, or `=>`.
 
 ```text
+@wvf
 @group Master
   clk:     p....... ; period=2
   address: x3.x4..x => 0x10 0x20 ; phase=0.25
@@ -161,7 +163,7 @@ analog: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H3 A0.5,0.5 0 0 1 4,1 L5,0
 
 Register and assign diagrams are not supported. JSON5 input accepts the subset usual for these diagrams: bare or quoted keys, either quote style, comments, trailing commas, arrays, objects, finite numbers, booleans, and null.
 
-When generating a timing diagram: one `name: wave` line per signal, labels only after `=>`, node names only in `node=` or `@edge`, and a `#` comment rather than `//`.
+When generating a timing diagram: start with `@wvf`, then one `name: wave` line per signal, labels only after `=>`, node names only in `node=` or `@edge`, and a `#` comment rather than `//`.
 
 ## ASM charts
 
@@ -289,9 +291,9 @@ That example reports median and p95 render times, SVG sizes, and native versus J
 ## Library
 
 ```rust
-let svg = tgw::render("clk: P...\ndata: x3.4 => ready done")?;
+let svg = tgw::render("@wvf\nclk: P...\ndata: x3.4 => ready done")?;
 let mut buffer = Vec::new();
-tgw::render_into("clk: p...", &mut buffer)?;
+tgw::render_into("@wvf\nclk: p...", &mut buffer)?;
 let editable = tgw::to_tgw("{signal:[{name:'clk',wave:'p...'}]}")?;
 # Ok::<(), tgw::Error>(())
 ```
