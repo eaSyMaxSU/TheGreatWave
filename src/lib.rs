@@ -11,6 +11,7 @@
 mod asm;
 mod asm_emit;
 mod asm_layout;
+mod draw;
 mod emit;
 mod format;
 mod geom;

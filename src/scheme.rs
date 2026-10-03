@@ -50,6 +50,31 @@ pub struct Scheme {
     pub mark6: &'static str,
     pub mark7: &'static str,
     pub mark8: &'static str,
+    /// Drop shadow under schedule and netlist cards, painted at low opacity.
+    pub shadow: &'static str,
+    /// Every other cycle band in a schedule.
+    pub band: &'static str,
+    /// Clock edges and dividers.
+    pub rule: &'static str,
+    /// Counts of zero, and other text that should recede.
+    pub quiet: &'static str,
+    /// Adder, multiplier, and divider cards: border and wires, then fill.
+    pub add_ink: &'static str,
+    pub add_fill: &'static str,
+    pub mul_ink: &'static str,
+    pub mul_fill: &'static str,
+    pub div_ink: &'static str,
+    pub div_fill: &'static str,
+    /// Gate bodies.
+    pub gate_ink: &'static str,
+    pub gate_fill: &'static str,
+    /// Netlist wires.
+    pub wire: &'static str,
+    /// Primary inputs and tie-offs, then live-outs.
+    pub in_ink: &'static str,
+    pub in_fill: &'static str,
+    pub out_ink: &'static str,
+    pub out_fill: &'static str,
 }
 
 /// The palette the file writer uses.
@@ -87,6 +112,23 @@ pub static LIGHT: Scheme = Scheme {
     mark6: "#af9800",
     mark7: "#00864f",
     mark8: "#a076ff",
+    shadow: "#0f172a",
+    band: "#f8fafc",
+    rule: "#cbd5e1",
+    quiet: "#b6c2d1",
+    add_ink: "#2563eb",
+    add_fill: "#eff6ff",
+    mul_ink: "#7c3aed",
+    mul_fill: "#f5f3ff",
+    div_ink: "#ea580c",
+    div_fill: "#fff7ed",
+    gate_ink: "#4f46e5",
+    gate_fill: "#eef2ff",
+    wire: "#475569",
+    in_ink: "#0d9488",
+    in_fill: "#f0fdfa",
+    out_ink: "#e11d48",
+    out_fill: "#fff1f2",
 };
 
 /// The same roles as [`LIGHT`], for a dark window.
@@ -124,6 +166,23 @@ pub static DARK: Scheme = Scheme {
     mark6: "#f0d060",
     mark7: "#3dce8c",
     mark8: "#c4b5fd",
+    shadow: "#000000",
+    band: "#161d2a",
+    rule: "#334155",
+    quiet: "#4b5a6e",
+    add_ink: "#60a5fa",
+    add_fill: "#14223d",
+    mul_ink: "#a78bfa",
+    mul_fill: "#221a3f",
+    div_ink: "#fb923c",
+    div_fill: "#33200f",
+    gate_ink: "#818cf8",
+    gate_fill: "#1b1f3f",
+    wire: "#94a3b8",
+    in_ink: "#2dd4bf",
+    in_fill: "#0f2a2a",
+    out_ink: "#fb7185",
+    out_fill: "#361722",
 };
 
 pub static ALL: &[&Scheme] = &[&LIGHT, &DARK];

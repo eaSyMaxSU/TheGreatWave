@@ -1,13 +1,15 @@
-//! Pixel-grid SVG for an ASM chart. Borders are filled rings, so a 1px edge
-//! stays on whole pixels instead of straddling a centered stroke.
+//! SVG for an ASM chart: state cards with a coloured name header, amber
+//! decision diamonds, rounded conditional-output pills, and rounded 2px wires
+//! with a dot wherever paths into one state merge.
 
 use crate::asm::Chart;
-use crate::asm_layout::{self, Digit, Kind, Node, Seg};
+use crate::asm_layout::{self, Digit, Kind, Node, Seg, HEADER};
+use crate::draw::{self, Text};
 use crate::scheme::Scheme;
-use crate::w::{prettify, push_esc, push_i64};
 use crate::Error;
 
 const MARGIN: i64 = 8;
+const LINE: i64 = 16;
 
 pub(crate) fn write(
     chart: &Chart,
@@ -16,315 +18,222 @@ pub(crate) fn write(
     scheme: &'static Scheme,
 ) -> Result<(), Error> {
     let scene = asm_layout::layout(chart);
-    let width = scene.width + MARGIN * 2;
-    let height = scene.height + MARGIN * 2;
-    out.extend_from_slice(
-        b"<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"tgw asm\" role=\"img\" aria-labelledby=\"diagram-title\" width=\"",
-    );
-    push_i64(out, width);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, height);
-    out.extend_from_slice(b"\" viewBox=\"0 0 ");
-    push_i64(out, width);
-    out.push(b' ');
-    push_i64(out, height);
-    out.extend_from_slice(
-        b"\" overflow=\"hidden\" font-family=\"Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif\" font-size=\"12\" fill=\"",
-    );
-    out.extend_from_slice(scheme.text.as_bytes());
-    out.extend_from_slice(b"\" stroke=\"none\"><title id=\"diagram-title\">");
-    if let Some(title) = &scene.title {
-        push_esc(out, title);
-    } else {
-        out.extend_from_slice(b"ASM chart");
-    }
-    out.extend_from_slice(b"</title><desc>");
-    push_i64(out, chart.states.len() as i64);
-    out.extend_from_slice(if chart.states.len() == 1 {
-        b" state"
-    } else {
-        b" states"
-    });
+    let states = chart.states.len();
+    let mut desc = format!("{states} {}", if states == 1 { "state" } else { "states" });
     for state in &chart.states {
-        out.extend_from_slice(b"; ");
-        push_esc(out, &state.name);
+        desc.push_str("; ");
+        desc.push_str(&state.name);
     }
-    out.extend_from_slice(
-        b"</desc><defs><clipPath id=\"plot-clip\"><rect x=\"0\" y=\"0\" width=\"",
+    draw::begin(
+        out,
+        "tgw asm",
+        scene.width + MARGIN * 2,
+        scene.height + MARGIN * 2,
+        MARGIN,
+        (scene.width, scene.height),
+        scene.title.as_deref().unwrap_or("ASM chart"),
+        &desc,
+        scheme,
     );
-    push_i64(out, scene.width);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, scene.height);
-    out.extend_from_slice(b"\"/></clipPath></defs><rect width=\"");
-    push_i64(out, width);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, height);
-    out.extend_from_slice(b"\" fill=\"");
-    out.extend_from_slice(scheme.paper.as_bytes());
-    out.extend_from_slice(b"\"/><g transform=\"translate(");
-    push_i64(out, MARGIN);
-    out.push(b',');
-    push_i64(out, MARGIN);
-    out.extend_from_slice(b")\">");
-    for seg in &scene.segs {
-        if !seg.arrow {
-            draw_bar(out, seg, scheme.ink);
+    let paths = polylines(&scene.segs);
+    for (points, arrow) in &paths {
+        if *arrow {
+            draw::wire(out, &trimmed(points), 6, scheme.wire);
+        } else {
+            draw::wire(out, points, 6, scheme.wire);
+        }
+    }
+    let mut tips: Vec<(i64, i64)> = paths
+        .iter()
+        .filter(|(_, arrow)| *arrow)
+        .map(|(points, _)| *points.last().unwrap())
+        .collect();
+    tips.sort_unstable();
+    tips.dedup();
+    for tip in &tips {
+        let into: Vec<Vec<(i64, i64)>> = paths
+            .iter()
+            .filter(|(points, arrow)| *arrow && points.last() == Some(tip))
+            .map(|(points, _)| points.clone())
+            .collect();
+        for (x, y) in draw::junctions(&into) {
+            draw::circle(out, x, y, 3, scheme.wire);
         }
     }
     for node in &scene.nodes {
-        draw_node(out, node, scheme);
+        shape(out, node, scheme);
     }
-    for seg in &scene.segs {
-        if seg.arrow {
-            draw_arrow(out, seg, scheme.ink);
+    for (points, arrow) in &paths {
+        if *arrow {
+            let n = points.len();
+            draw::arrow(out, points[n - 2], points[n - 1], scheme.wire);
         }
     }
     for node in &scene.nodes {
-        draw_node_text(out, node);
+        label(out, node, scheme);
     }
     for digit in &scene.digits {
-        draw_digit(out, digit, scheme.muted);
+        exit_digit(out, digit, scheme);
     }
     if let Some(title) = &scene.title {
-        draw_caption(out, title, scene.title_at);
+        draw::heading(out, title, scene.title_at, 15, None);
     }
     if let Some(footer) = &scene.footer {
-        draw_caption(out, footer, scene.footer_at);
+        draw::heading(out, footer, scene.footer_at, 12, Some(scheme.muted));
     }
-    out.extend_from_slice(b"</g></svg>");
-    crate::emit::scope_ids(out);
-    if indent > 0 {
-        let pretty = prettify(out, indent);
-        out.clear();
-        out.extend_from_slice(&pretty);
-    }
+    draw::finish(out, indent);
     Ok(())
 }
 
-fn draw_node(out: &mut Vec<u8>, node: &Node, scheme: &Scheme) {
+/// Join touching segments into wires. A wire ends where an arrow lands.
+fn polylines(segs: &[Seg]) -> Vec<(Vec<(i64, i64)>, bool)> {
+    let mut paths: Vec<(Vec<(i64, i64)>, bool)> = Vec::new();
+    for seg in segs {
+        let (from, to) = ((seg.x0, seg.y0), (seg.x1, seg.y1));
+        match paths.last_mut() {
+            Some((points, false)) if points.last() == Some(&from) => {
+                points.push(to);
+                if seg.arrow {
+                    paths.last_mut().unwrap().1 = true;
+                }
+            }
+            _ => paths.push((vec![from, to], seg.arrow)),
+        }
+    }
+    paths
+}
+
+/// Stop an arrowed wire under its arrowhead.
+fn trimmed(points: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut points = points.to_vec();
+    let n = points.len();
+    if n >= 2 {
+        let (a, b) = (points[n - 2], points[n - 1]);
+        let back = 6.min((a.0 - b.0).abs() + (a.1 - b.1).abs());
+        points[n - 1] = (
+            b.0 - (b.0 - a.0).signum() * back,
+            b.1 - (b.1 - a.1).signum() * back,
+        );
+    }
+    points
+}
+
+fn shape(out: &mut Vec<u8>, node: &Node, scheme: &Scheme) {
+    let (x, y, w, h) = (node.x, node.y, node.w, node.h);
     match node.kind {
-        Kind::State | Kind::Cond => {
-            fill_rect(out, node.x, node.y, node.w, node.h, scheme.ink);
-            fill_rect(
-                out,
-                node.x + 1,
-                node.y + 1,
-                node.w - 2,
-                node.h - 2,
-                scheme.paper,
-            );
+        Kind::State => {
+            draw::shadow(out, x, y, w, h, 6, scheme);
+            if node.head >= node.lines.len() {
+                draw::framed(out, x, y, w, h, 6, scheme.gate_ink, scheme.gate_ink);
+            } else {
+                draw::framed(out, x, y, w, h, 6, scheme.gate_ink, scheme.gate_fill);
+                let header = HEADER + (node.head.max(1) as i64 - 1) * LINE;
+                draw::rect(out, x + 1, y + 1, w - 2, header - 1, 5, scheme.gate_ink);
+                draw::rect(out, x + 1, y + header - 6, w - 2, 6, 0, scheme.gate_ink);
+            }
+        }
+        Kind::Cond => {
+            let rx = (h / 2).min(14);
+            draw::shadow(out, x, y, w, h, rx, scheme);
+            draw::framed(out, x, y, w, h, rx, scheme.in_ink, scheme.in_fill);
         }
         Kind::Diamond => {
-            let cx = node.x + node.w / 2;
-            let cy = node.y + node.h / 2;
-            polygon(
+            let cx = x + w / 2;
+            let cy = y + h / 2;
+            let shadow = [(cx, y + 2), (x + w, cy + 2), (cx, y + h + 2), (x, cy + 2)];
+            out.extend_from_slice(b"<polygon points=\"");
+            for (index, (px, py)) in shadow.iter().enumerate() {
+                if index > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(format!("{px},{py}").as_bytes());
+            }
+            out.extend_from_slice(b"\" fill=\"");
+            out.extend_from_slice(scheme.shadow.as_bytes());
+            out.extend_from_slice(b"\" fill-opacity=\"0.12\"/>");
+            draw::polygon(
                 out,
-                &[
-                    (cx, node.y),
-                    (node.x + node.w, cy),
-                    (cx, node.y + node.h),
-                    (node.x, cy),
-                ],
-                scheme.ink,
+                &[(cx, y), (x + w, cy), (cx, y + h), (x, cy)],
+                scheme.div_ink,
             );
-            polygon(
+            draw::polygon(
                 out,
-                &[
-                    (cx, node.y + 1),
-                    (node.x + node.w - 1, cy),
-                    (cx, node.y + node.h - 1),
-                    (node.x + 1, cy),
-                ],
-                scheme.paper,
+                &[(cx, y + 2), (x + w - 3, cy), (cx, y + h - 2), (x + 3, cy)],
+                scheme.div_fill,
             );
         }
     }
 }
 
-fn draw_node_text(out: &mut Vec<u8>, node: &Node) {
+fn label(out: &mut Vec<u8>, node: &Node, scheme: &Scheme) {
     if node.lines.is_empty() {
         return;
     }
-    let count = node.lines.len() as i64;
-    let pad = (node.h - count * 16) / 2;
     let x = node.x + node.w / 2;
-    for (index, line) in node.lines.iter().enumerate() {
-        let y = node.y + pad + 12 + index as i64 * 16;
-        text(out, x, y, TextStyle::plain("middle", 12), line);
+    let line = |out: &mut Vec<u8>, y: i64, weight: Option<u16>, fill: Option<&str>, value: &str| {
+        draw::text(
+            out,
+            Text {
+                x,
+                y,
+                anchor: "middle",
+                size: 12,
+                weight,
+                fill,
+            },
+            value,
+        );
+    };
+    match node.kind {
+        Kind::State => {
+            for (index, value) in node.lines.iter().enumerate() {
+                if index < node.head {
+                    let y = node.y + 16 + index as i64 * LINE;
+                    line(out, y, Some(700), Some(scheme.paper), value);
+                } else {
+                    let header = HEADER + (node.head.max(1) as i64 - 1) * LINE;
+                    let body = node.h - header;
+                    let count = (node.lines.len() - node.head) as i64;
+                    let top = node.y + header + (body - count * LINE) / 2;
+                    let y = top + 12 + (index - node.head) as i64 * LINE;
+                    line(out, y, None, None, value);
+                }
+            }
+        }
+        Kind::Cond | Kind::Diamond => {
+            let count = node.lines.len() as i64;
+            let pad = (node.h - count * LINE) / 2;
+            let (weight, fill) = if node.kind == Kind::Cond {
+                (Some(600), Some(scheme.in_ink))
+            } else {
+                (Some(600), None)
+            };
+            for (index, value) in node.lines.iter().enumerate() {
+                line(
+                    out,
+                    node.y + pad + 12 + index as i64 * LINE,
+                    weight,
+                    fill,
+                    value,
+                );
+            }
+        }
     }
 }
 
-fn draw_digit(out: &mut Vec<u8>, digit: &Digit, fill: &str) {
-    text(
+fn exit_digit(out: &mut Vec<u8>, digit: &Digit, scheme: &Scheme) {
+    draw::text(
         out,
-        digit.x,
-        digit.y,
-        TextStyle {
+        Text {
+            x: digit.x,
+            y: digit.y,
             anchor: if digit.end { "end" } else { "start" },
             size: 11,
-            weight: None,
-            fill: Some(fill),
+            weight: Some(700),
+            fill: Some(scheme.div_ink),
         },
         digit.text,
     );
-}
-
-fn draw_caption(out: &mut Vec<u8>, caption: &str, at: (i64, i64)) {
-    text(
-        out,
-        at.0,
-        at.1,
-        TextStyle {
-            anchor: "middle",
-            size: 14,
-            weight: Some(600),
-            fill: None,
-        },
-        caption,
-    );
-}
-
-fn draw_bar(out: &mut Vec<u8>, seg: &Seg, ink: &str) {
-    bar(out, seg.x0, seg.y0, seg.x1, seg.y1, ink);
-}
-
-fn draw_arrow(out: &mut Vec<u8>, seg: &Seg, ink: &str) {
-    let (x1, y1) = pull_back(seg, 6);
-    if (x1, y1) != (seg.x0, seg.y0) {
-        bar(out, seg.x0, seg.y0, x1, y1, ink);
-    }
-    let tip = (seg.x1, seg.y1);
-    let points: [(i64, i64); 3] = if seg.x0 == seg.x1 {
-        if seg.y1 >= seg.y0 {
-            [
-                (tip.0, tip.1),
-                (tip.0 - 3, tip.1 - 6),
-                (tip.0 + 3, tip.1 - 6),
-            ]
-        } else {
-            [
-                (tip.0, tip.1),
-                (tip.0 - 3, tip.1 + 6),
-                (tip.0 + 3, tip.1 + 6),
-            ]
-        }
-    } else if seg.x1 >= seg.x0 {
-        [
-            (tip.0, tip.1),
-            (tip.0 - 6, tip.1 - 3),
-            (tip.0 - 6, tip.1 + 3),
-        ]
-    } else {
-        [
-            (tip.0, tip.1),
-            (tip.0 + 6, tip.1 - 3),
-            (tip.0 + 6, tip.1 + 3),
-        ]
-    };
-    polygon(out, &points, ink);
-}
-
-fn pull_back(seg: &Seg, by: i64) -> (i64, i64) {
-    if seg.x0 == seg.x1 {
-        if seg.y1 >= seg.y0 {
-            (seg.x1, seg.y0.max(seg.y1 - by))
-        } else {
-            (seg.x1, seg.y0.min(seg.y1 + by))
-        }
-    } else if seg.y0 == seg.y1 {
-        if seg.x1 >= seg.x0 {
-            (seg.x0.max(seg.x1 - by), seg.y1)
-        } else {
-            (seg.x0.min(seg.x1 + by), seg.y1)
-        }
-    } else {
-        (seg.x1, seg.y1)
-    }
-}
-
-fn bar(out: &mut Vec<u8>, x0: i64, y0: i64, x1: i64, y1: i64, ink: &str) {
-    if x0 == x1 {
-        let y = y0.min(y1);
-        fill_rect(out, x0, y, 1, (y0 - y1).abs() + 1, ink);
-    } else if y0 == y1 {
-        let x = x0.min(x1);
-        fill_rect(out, x, y0, (x0 - x1).abs() + 1, 1, ink);
-    }
-}
-
-fn fill_rect(out: &mut Vec<u8>, x: i64, y: i64, w: i64, h: i64, fill: &str) {
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    out.extend_from_slice(b"<rect x=\"");
-    push_i64(out, x);
-    out.extend_from_slice(b"\" y=\"");
-    push_i64(out, y);
-    out.extend_from_slice(b"\" width=\"");
-    push_i64(out, w);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, h);
-    out.extend_from_slice(b"\" fill=\"");
-    out.extend_from_slice(fill.as_bytes());
-    out.extend_from_slice(b"\"/>");
-}
-
-fn polygon(out: &mut Vec<u8>, points: &[(i64, i64)], fill: &str) {
-    out.extend_from_slice(b"<polygon points=\"");
-    for (index, (x, y)) in points.iter().enumerate() {
-        if index > 0 {
-            out.push(b' ');
-        }
-        push_i64(out, *x);
-        out.push(b',');
-        push_i64(out, *y);
-    }
-    out.extend_from_slice(b"\" fill=\"");
-    out.extend_from_slice(fill.as_bytes());
-    out.extend_from_slice(b"\"/>");
-}
-
-struct TextStyle<'a> {
-    anchor: &'a str,
-    size: i64,
-    weight: Option<u16>,
-    fill: Option<&'a str>,
-}
-
-impl<'a> TextStyle<'a> {
-    fn plain(anchor: &'a str, size: i64) -> Self {
-        Self {
-            anchor,
-            size,
-            weight: None,
-            fill: None,
-        }
-    }
-}
-
-fn text(out: &mut Vec<u8>, x: i64, y: i64, style: TextStyle<'_>, value: &str) {
-    out.extend_from_slice(b"<text x=\"");
-    push_i64(out, x);
-    out.extend_from_slice(b"\" y=\"");
-    push_i64(out, y);
-    out.extend_from_slice(b"\" text-anchor=\"");
-    out.extend_from_slice(style.anchor.as_bytes());
-    out.extend_from_slice(b"\" font-size=\"");
-    push_i64(out, style.size);
-    out.push(b'"');
-    if let Some(weight) = style.weight {
-        out.extend_from_slice(b" font-weight=\"");
-        push_i64(out, i64::from(weight));
-        out.push(b'"');
-    }
-    if let Some(fill) = style.fill {
-        out.extend_from_slice(b" fill=\"");
-        out.extend_from_slice(fill.as_bytes());
-        out.push(b'"');
-    }
-    out.extend_from_slice(b" xml:space=\"preserve\">");
-    push_esc(out, value);
-    out.extend_from_slice(b"</text>");
 }
 
 #[cfg(test)]
@@ -386,5 +295,36 @@ wait:
                 assert!(number.parse::<i64>().is_ok(), "non-integer point {number}");
             }
         }
+    }
+
+    #[test]
+    fn segments_join_into_wires_that_end_at_arrows() {
+        let segs = [
+            Seg {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 10,
+                arrow: false,
+            },
+            Seg {
+                x0: 0,
+                y0: 10,
+                x1: 20,
+                y1: 10,
+                arrow: true,
+            },
+            Seg {
+                x0: 20,
+                y0: 10,
+                x1: 20,
+                y1: 30,
+                arrow: true,
+            },
+        ];
+        let paths = polylines(&segs);
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], (vec![(0, 0), (0, 10), (20, 10)], true));
+        assert_eq!(trimmed(&paths[0].0), vec![(0, 0), (0, 10), (14, 10)]);
     }
 }

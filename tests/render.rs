@@ -405,7 +405,7 @@ fn asm_chart_round_trips_and_stays_on_the_pixel_grid() {
     let mut dark = Vec::new();
     tgw::render_themed(&source, &mut dark, 0, &tgw::scheme::DARK).unwrap();
     let dark = String::from_utf8(dark).unwrap();
-    assert!(dark.contains(tgw::scheme::DARK.ink));
+    assert!(dark.contains(tgw::scheme::DARK.wire));
     assert!(dark.contains(tgw::scheme::DARK.paper));
     assert!(dark.contains("class=\"tgw asm\""));
 }
@@ -601,8 +601,9 @@ fn hls_edge_cases_render_and_round_trip() {
         schedule
     );
     let divider = tgw::render(&fs::read_to_string(dir.join("divider.tgw")).unwrap()).unwrap();
-    assert!(divider.contains("/1"), "{divider}");
-    assert!(schedule.contains("+2"), "{schedule}");
+    assert!(divider.contains(">\u{f7}1</text>"), "{divider}");
+    assert!(schedule.contains(">+2</text>"), "{schedule}");
+    assert!(schedule.contains(">3 cycles</text>"), "{schedule}");
 }
 
 #[test]
@@ -716,11 +717,12 @@ fn gtl_edge_cases_render_and_round_trip() {
     assert!(example.contains(">MUX</text>"), "{example}");
     let nand = tgw::render(&fs::read_to_string(dir.join("nand.tgw")).unwrap()).unwrap();
     let and = tgw::render(&fs::read_to_string(dir.join("one.tgw")).unwrap()).unwrap();
-    assert_ne!(
-        nand.matches("<rect ").count(),
-        and.matches("<rect ").count(),
-        "nand adds an invert square"
+    assert_eq!(
+        nand.matches("<circle ").count(),
+        1,
+        "nand adds an invert bubble"
     );
+    assert_eq!(and.matches("<circle ").count(), 0, "and has no bubble");
 }
 
 #[test]

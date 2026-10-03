@@ -1,10 +1,12 @@
-//! Pixel-grid SVG for a gate netlist. A wire and a box border are filled
-//! rectangles on whole pixels. An inverted output is a filled square.
+//! SVG for a gate netlist: distinctive-shape gate symbols with inversion
+//! bubbles, rounded wires with junction dots, input and output pills, and the
+//! name of every internal net on its wire.
 
-use crate::gtl::Netlist;
-use crate::gtl_layout::{self, Bar, Caption, GateBox, Scene, Square};
+use crate::draw::{self, Text};
+use crate::gtl::{Kind, Netlist};
+use crate::gtl_layout::{self, Pill, Role, Scene, Symbol, BUBBLE, PILL_H};
 use crate::scheme::Scheme;
-use crate::w::{prettify, push_esc, push_i64};
+use crate::w::push_i64;
 use crate::Error;
 
 const MARGIN: i64 = 8;
@@ -16,180 +18,233 @@ pub(crate) fn write(
     scheme: &'static Scheme,
 ) -> Result<(), Error> {
     let scene = gtl_layout::layout(net);
-    let width = scene.width + MARGIN * 2;
-    let height = scene.height + MARGIN * 2;
-    out.extend_from_slice(
-        b"<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"tgw gtl\" role=\"img\" aria-labelledby=\"diagram-title\" width=\"",
+    let gates = net.gates.len();
+    let desc = format!("{gates} {}", if gates == 1 { "gate" } else { "gates" });
+    draw::begin(
+        out,
+        "tgw gtl",
+        scene.width + MARGIN * 2,
+        scene.height + MARGIN * 2,
+        MARGIN,
+        (scene.width, scene.height),
+        scene.title.as_deref().unwrap_or("Gate netlist"),
+        &desc,
+        scheme,
     );
-    push_i64(out, width);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, height);
-    out.extend_from_slice(b"\" viewBox=\"0 0 ");
-    push_i64(out, width);
-    out.push(b' ');
-    push_i64(out, height);
-    out.extend_from_slice(
-        b"\" overflow=\"hidden\" font-family=\"Inter, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif\" font-size=\"12\" fill=\"",
-    );
-    out.extend_from_slice(scheme.text.as_bytes());
-    out.extend_from_slice(b"\" stroke=\"none\"><title id=\"diagram-title\">");
-    if let Some(title) = &scene.title {
-        push_esc(out, title);
-    } else {
-        out.extend_from_slice(b"Gate netlist");
-    }
-    out.extend_from_slice(b"</title><desc>");
-    push_i64(out, net.gates.len() as i64);
-    out.extend_from_slice(if net.gates.len() == 1 {
-        b" gate"
-    } else {
-        b" gates"
-    });
-    out.extend_from_slice(
-        b"</desc><defs><clipPath id=\"plot-clip\"><rect x=\"0\" y=\"0\" width=\"",
-    );
-    push_i64(out, scene.width);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, scene.height);
-    out.extend_from_slice(b"\"/></clipPath></defs><rect width=\"");
-    push_i64(out, width);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, height);
-    out.extend_from_slice(b"\" fill=\"");
-    out.extend_from_slice(scheme.paper.as_bytes());
-    out.extend_from_slice(b"\"/><g transform=\"translate(");
-    push_i64(out, MARGIN);
-    out.push(b',');
-    push_i64(out, MARGIN);
-    out.extend_from_slice(b")\">");
     paint(&scene, out, scheme);
-    out.extend_from_slice(b"</g></svg>");
-    crate::emit::scope_ids(out);
-    if indent > 0 {
-        let pretty = prettify(out, indent);
-        out.clear();
-        out.extend_from_slice(&pretty);
-    }
+    draw::finish(out, indent);
     Ok(())
 }
 
 fn paint(scene: &Scene, out: &mut Vec<u8>, scheme: &Scheme) {
-    for bar in &scene.bars {
-        fill_bar(out, bar, scheme.ink);
+    for path in &scene.wires {
+        draw::wire(out, path, 5, scheme.wire);
+    }
+    for &(x, y) in &scene.dots {
+        draw::circle(out, x, y, 3, scheme.wire);
     }
     for gate in &scene.gates {
-        fill_rect(out, gate.x, gate.y, gate.w, gate.h, scheme.ink);
-        fill_rect(
+        draw::outline_shadow(
             out,
-            gate.x + 1,
-            gate.y + 1,
-            gate.w - 2,
-            gate.h - 2,
-            scheme.paper,
+            &shape(gate.kind, gate.x, gate.y + 2, gate.w, gate.h),
+            scheme,
         );
     }
-    for square in &scene.squares {
-        fill_square(out, square, scheme.ink);
-    }
     for gate in &scene.gates {
-        gate_text(out, gate);
+        symbol(out, gate, scheme);
     }
-    for caption in &scene.captions {
-        caption_text(out, caption, scheme.muted);
+    for pill in &scene.pills {
+        tag(out, pill, scheme);
+    }
+    for label in &scene.nets {
+        draw::text(
+            out,
+            Text {
+                x: label.x,
+                y: label.y,
+                anchor: "start",
+                size: 10,
+                weight: Some(500),
+                fill: Some(scheme.muted),
+            },
+            &label.text,
+        );
     }
     if let Some(title) = &scene.title {
-        heading(out, title, scene.title_at);
+        draw::heading(out, title, scene.title_at, 15, None);
     }
     if let Some(footer) = &scene.footer {
-        heading(out, footer, scene.footer_at);
+        draw::heading(out, footer, scene.footer_at, 12, Some(scheme.muted));
     }
 }
 
-fn gate_text(out: &mut Vec<u8>, gate: &GateBox) {
-    text(
+fn symbol(out: &mut Vec<u8>, gate: &Symbol, scheme: &Scheme) {
+    let (x, y, w, h) = (gate.x, gate.y, gate.w, gate.h);
+    draw::outline(
         out,
-        gate.x + gate.w / 2,
-        gate.y + gate.h / 2 + 4,
-        "middle",
-        12,
-        None,
+        &shape(gate.kind, x, y, w, h),
+        scheme.gate_fill,
+        scheme.gate_ink,
+    );
+    if matches!(gate.kind, Kind::Xor | Kind::Xnor) {
+        let mut d = Vec::new();
+        d.push(b'M');
+        push_pair(&mut d, x - 1, y + h);
+        d.push(b'Q');
+        push_pair(&mut d, x - 1 + (w - 8) * 3 / 10, y + h / 2);
+        d.push(b' ');
+        push_pair(&mut d, x - 1, y);
+        draw::outline(
+            out,
+            std::str::from_utf8(&d).unwrap(),
+            "none",
+            scheme.gate_ink,
+        );
+    }
+    if gate.kind.invert() {
+        draw::ring(
+            out,
+            x + w + BUBBLE,
+            y + h / 2,
+            BUBBLE,
+            scheme.paper,
+            scheme.gate_ink,
+        );
+    }
+    let center = match gate.kind {
+        Kind::Not => x + w * 2 / 5,
+        Kind::Mux => x + w / 2 + 2,
+        Kind::Xor | Kind::Xnor => x + 8 + (w - 8) / 2,
+        Kind::Or | Kind::Nor => x + w / 2,
+        _ => x + w * 9 / 20,
+    };
+    draw::text(
+        out,
+        Text {
+            x: center,
+            y: y + h / 2 + 4,
+            anchor: "middle",
+            size: 10,
+            weight: Some(700),
+            fill: Some(scheme.gate_ink),
+        },
         gate.label,
     );
+    for (bit, &row) in gate.data.iter().enumerate() {
+        draw::text(
+            out,
+            Text {
+                x: x + 6,
+                y: row + 3,
+                anchor: "start",
+                size: 9,
+                weight: Some(600),
+                fill: Some(scheme.tick),
+            },
+            if bit == 0 { "0" } else { "1" },
+        );
+    }
 }
 
-fn caption_text(out: &mut Vec<u8>, caption: &Caption, fill: &str) {
-    text(
+/// The distinctive outline of each gate inside its `w` by `h` box.
+pub(crate) fn shape(kind: Kind, x: i64, y: i64, w: i64, h: i64) -> String {
+    let mut d = Vec::new();
+    let mid = y + h / 2;
+    match kind {
+        Kind::And | Kind::Nand => {
+            let r = h / 2;
+            d.push(b'M');
+            push_pair(&mut d, x, y);
+            d.push(b'H');
+            push_i64(&mut d, x + w - r);
+            d.extend_from_slice(b"A");
+            push_pair(&mut d, r, r);
+            d.extend_from_slice(b" 0 0 1 ");
+            push_pair(&mut d, x + w - r, y + h);
+            d.push(b'H');
+            push_i64(&mut d, x);
+            d.push(b'Z');
+        }
+        Kind::Or | Kind::Nor | Kind::Xor | Kind::Xnor => {
+            let left = if matches!(kind, Kind::Xor | Kind::Xnor) {
+                x + 8
+            } else {
+                x
+            };
+            let span = x + w - left;
+            d.push(b'M');
+            push_pair(&mut d, left, y);
+            d.push(b'Q');
+            push_pair(&mut d, left + span * 3 / 5, y);
+            d.push(b' ');
+            push_pair(&mut d, x + w, mid);
+            d.push(b'Q');
+            push_pair(&mut d, left + span * 3 / 5, y + h);
+            d.push(b' ');
+            push_pair(&mut d, left, y + h);
+            d.push(b'Q');
+            push_pair(&mut d, left + span * 3 / 10, mid);
+            d.push(b' ');
+            push_pair(&mut d, left, y);
+            d.push(b'Z');
+        }
+        Kind::Not => {
+            d.push(b'M');
+            push_pair(&mut d, x, y);
+            d.push(b'L');
+            push_pair(&mut d, x + w, mid);
+            d.push(b'L');
+            push_pair(&mut d, x, y + h);
+            d.push(b'Z');
+        }
+        Kind::Mux => {
+            let slant = h / 5;
+            d.push(b'M');
+            push_pair(&mut d, x, y);
+            d.push(b'L');
+            push_pair(&mut d, x + w, y + slant);
+            d.push(b'L');
+            push_pair(&mut d, x + w, y + h - slant);
+            d.push(b'L');
+            push_pair(&mut d, x, y + h);
+            d.push(b'Z');
+        }
+    }
+    String::from_utf8(d).unwrap()
+}
+
+fn push_pair(d: &mut Vec<u8>, x: i64, y: i64) {
+    push_i64(d, x);
+    d.push(b' ');
+    push_i64(d, y);
+}
+
+fn tag(out: &mut Vec<u8>, pill: &Pill, scheme: &Scheme) {
+    let (ink, fill) = match pill.role {
+        Role::Input => (scheme.in_ink, scheme.in_fill),
+        Role::Const => (scheme.tick, scheme.hatch_fill),
+        Role::Output => (scheme.out_ink, scheme.out_fill),
+    };
+    draw::framed(
         out,
-        caption.x,
-        caption.y,
-        caption.anchor,
-        11,
-        Some(fill),
-        &caption.text,
+        pill.x,
+        pill.y - PILL_H / 2,
+        pill.w,
+        PILL_H,
+        PILL_H / 2,
+        ink,
+        fill,
     );
-}
-
-fn heading(out: &mut Vec<u8>, value: &str, at: (i64, i64)) {
-    out.extend_from_slice(b"<text x=\"");
-    push_i64(out, at.0);
-    out.extend_from_slice(b"\" y=\"");
-    push_i64(out, at.1);
-    out.extend_from_slice(
-        b"\" text-anchor=\"middle\" font-size=\"14\" font-weight=\"600\" xml:space=\"preserve\">",
+    draw::text(
+        out,
+        Text {
+            x: pill.x + pill.w / 2,
+            y: pill.y + 4,
+            anchor: "middle",
+            size: 11,
+            weight: Some(650),
+            fill: Some(ink),
+        },
+        &pill.text,
     );
-    push_esc(out, value);
-    out.extend_from_slice(b"</text>");
-}
-
-fn text(
-    out: &mut Vec<u8>,
-    x: i64,
-    y: i64,
-    anchor: &str,
-    size: i64,
-    fill: Option<&str>,
-    value: &str,
-) {
-    out.extend_from_slice(b"<text x=\"");
-    push_i64(out, x);
-    out.extend_from_slice(b"\" y=\"");
-    push_i64(out, y);
-    out.extend_from_slice(b"\" text-anchor=\"");
-    out.extend_from_slice(anchor.as_bytes());
-    out.extend_from_slice(b"\" font-size=\"");
-    push_i64(out, size);
-    out.push(b'"');
-    if let Some(fill) = fill {
-        out.extend_from_slice(b" fill=\"");
-        out.extend_from_slice(fill.as_bytes());
-        out.push(b'"');
-    }
-    out.extend_from_slice(b" xml:space=\"preserve\">");
-    push_esc(out, value);
-    out.extend_from_slice(b"</text>");
-}
-
-fn fill_bar(out: &mut Vec<u8>, bar: &Bar, fill: &str) {
-    fill_rect(out, bar.x, bar.y, bar.w, bar.h, fill);
-}
-
-fn fill_square(out: &mut Vec<u8>, square: &Square, fill: &str) {
-    fill_rect(out, square.x, square.y, square.size, square.size, fill);
-}
-
-fn fill_rect(out: &mut Vec<u8>, x: i64, y: i64, w: i64, h: i64, fill: &str) {
-    if w <= 0 || h <= 0 {
-        return;
-    }
-    out.extend_from_slice(b"<rect x=\"");
-    push_i64(out, x);
-    out.extend_from_slice(b"\" y=\"");
-    push_i64(out, y);
-    out.extend_from_slice(b"\" width=\"");
-    push_i64(out, w);
-    out.extend_from_slice(b"\" height=\"");
-    push_i64(out, h);
-    out.extend_from_slice(b"\" fill=\"");
-    out.extend_from_slice(fill.as_bytes());
-    out.extend_from_slice(b"\"/>");
 }

@@ -7,11 +7,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 #[cfg(all(test, feature = "view"))]
-mod asm_pixels;
-#[cfg(all(test, feature = "view"))]
-mod gtl_pixels;
-#[cfg(all(test, feature = "view"))]
-mod hls_pixels;
+mod chart_pixels;
 #[cfg(feature = "view")]
 mod layout;
 #[cfg(feature = "watch")]

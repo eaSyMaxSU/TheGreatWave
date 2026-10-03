@@ -13,9 +13,16 @@ const FONT: f64 = 12.0;
 const LINE: i64 = 16;
 const GAP: i64 = 16;
 const H_GAP: i64 = 24;
-const BLOCK_GAP: i64 = 32;
+const BLOCK_GAP: i64 = 40;
+/// From the bottom of a block to its first outgoing row, between rows, and
+/// from the last row to where a wire turns into the next state.
+const CLEAR: i64 = 12;
+const ROW: i64 = 8;
+const APPROACH: i64 = 14;
+/// Height of a state's name header.
+pub(crate) const HEADER: i64 = 24;
 const PAD: i64 = 8;
-const CHANNEL: i64 = 12;
+const CHANNEL: i64 = 14;
 const OUTSET: i64 = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +40,8 @@ pub(crate) struct Node {
     pub w: i64,
     pub h: i64,
     pub lines: Vec<String>,
+    /// Leading lines that name a state; the rest are its outputs.
+    pub head: usize,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -107,19 +116,24 @@ pub(crate) fn layout(chart: &Chart) -> Scene {
         .collect();
 
     let mut y = 24;
-    for block in &mut blocks {
+    for (index, block) in blocks.iter_mut().enumerate() {
         let bottom = block_bottom(block);
         translate_block(block, 0, y);
         block.entry_y = y;
         block.bottom = y + bottom;
-        y = block.bottom + BLOCK_GAP;
+        let rows = block
+            .exits
+            .iter()
+            .filter(|exit| !straight(exit, index))
+            .count() as i64;
+        y = block.bottom + BLOCK_GAP.max(CLEAR + (rows - 1).max(0) * ROW + 10 + APPROACH);
     }
 
     let mut segs = Vec::new();
     if let Some(first) = blocks.first() {
         segs.push(Seg {
             x0: 0,
-            y0: first.entry_y - 16,
+            y0: first.entry_y - 20,
             x1: 0,
             y1: first.entry_y,
             arrow: true,
@@ -225,10 +239,11 @@ fn place_caption(
 fn layout_block(state: &crate::asm::State, names: &HashMap<&str, usize>) -> Block {
     let mut lines = Vec::new();
     push_visual(&mut lines, &state.name);
+    let head = lines.len();
     for output in &state.outputs {
         push_visual(&mut lines, &output.text);
     }
-    let (w, h) = box_size(&lines);
+    let (w, h) = state_size(&lines, head);
     let mut piece = Piece {
         nodes: vec![Node {
             kind: Kind::State,
@@ -237,6 +252,7 @@ fn layout_block(state: &crate::asm::State, names: &HashMap<&str, usize>) -> Bloc
             w,
             h,
             lines,
+            head,
         }],
         segs: Vec::new(),
         exits: Vec::new(),
@@ -279,20 +295,21 @@ fn layout_decision(decision: &Decision, spine: bool, names: &HashMap<&str, usize
             w: dw,
             h: dh,
             lines,
+            head: 0,
         }],
         segs: Vec::new(),
         exits: Vec::new(),
         digits: vec![
             Digit {
                 text: "0",
-                x: -8,
-                y: dh + 14,
+                x: -7,
+                y: dh + 13,
                 end: true,
             },
             Digit {
                 text: "1",
-                x: dw / 2 + 6,
-                y: dh / 2 - 8,
+                x: dw / 2 + 5,
+                y: dh / 2 - 7,
                 end: false,
             },
         ],
@@ -336,6 +353,7 @@ fn layout_branch(branch: &Branch, right: bool, spine: bool, names: &HashMap<&str
             w: bw,
             h: bh,
             lines,
+            head: 0,
         });
         piece.attach = attach;
         attach_next(&mut piece, cont, &branch.next, spine && !right, names);
@@ -396,17 +414,29 @@ struct Wire {
     y_lo: i64,
     y_hi: i64,
     from: (i64, i64),
+    /// Into the very next block: drop straight to it, no side channel.
+    next: bool,
+    /// Column the wire drops down, when it steps right first.
+    via: Option<i64>,
     entry: (i64, i64),
     y_clear: i64,
     approach: i64,
+    /// Source block and target: wires that share one also share a lane.
+    group: (usize, usize),
     lane: usize,
+}
+
+/// A spine exit straight into the next state needs no side channel.
+fn straight(exit: &Port, index: usize) -> bool {
+    exit.spine && exit.x == 0 && exit.target == index + 1
 }
 
 fn route(blocks: &[Block], segs: &mut Vec<Seg>) {
     let mut wires = Vec::new();
     for (index, block) in blocks.iter().enumerate() {
+        let mut leaving: Vec<&Port> = Vec::new();
         for exit in &block.exits {
-            if exit.spine && exit.x == 0 && exit.target == index + 1 {
+            if straight(exit, index) {
                 segs.push(Seg {
                     x0: exit.x,
                     y0: exit.y,
@@ -414,20 +444,65 @@ fn route(blocks: &[Block], segs: &mut Vec<Seg>) {
                     y1: blocks[exit.target].entry_y,
                     arrow: true,
                 });
-                continue;
+            } else {
+                leaving.push(exit);
             }
-            let y_clear = block.bottom + 8;
-            let approach = blocks[exit.target].entry_y - 12;
-            wires.push(Wire {
-                forward: exit.target > index,
-                y_lo: y_clear.min(approach),
-                y_hi: y_clear.max(approach),
-                from: (exit.x, exit.y),
-                entry: (0, blocks[exit.target].entry_y),
-                y_clear,
-                approach,
-                lane: 0,
-            });
+        }
+        // Exits bound for one state merge: they share a drop column and one
+        // row under the block. A right-hand exit steps out past every node
+        // below it, so its drop never runs down a diamond tip or a box.
+        let mut targets: Vec<usize> = Vec::new();
+        for exit in &leaving {
+            if !targets.contains(&exit.target) {
+                targets.push(exit.target);
+            }
+        }
+        targets.sort_by_key(|&target| {
+            let x = leaving
+                .iter()
+                .filter(|exit| exit.target == target)
+                .map(|exit| exit.x)
+                .max()
+                .unwrap_or(0);
+            if target > index {
+                (1, -x)
+            } else {
+                (0, x)
+            }
+        });
+        let mut last_column = i64::MIN;
+        for (row, &target) in targets.iter().enumerate() {
+            let group: Vec<&&Port> = leaving
+                .iter()
+                .filter(|exit| exit.target == target)
+                .collect();
+            let column = group
+                .iter()
+                .filter(|exit| exit.x > 0)
+                .map(|exit| drop_column(&block.nodes, exit))
+                .max()
+                .map(|x| x.max(last_column + ROW));
+            if let Some(x) = column {
+                last_column = x;
+            }
+            let y_clear = block.bottom + CLEAR + row as i64 * ROW;
+            let approach = blocks[target].entry_y - APPROACH;
+            for exit in group {
+                let via = column.filter(|&x| exit.x > 0 && clear_run(&block.nodes, exit, x));
+                wires.push(Wire {
+                    forward: target > index,
+                    next: target == index + 1,
+                    y_lo: y_clear.min(approach),
+                    y_hi: y_clear.max(approach),
+                    from: (exit.x, exit.y),
+                    via,
+                    entry: (0, blocks[target].entry_y),
+                    y_clear,
+                    approach,
+                    group: (index, target),
+                    lane: 0,
+                });
+            }
         }
     }
     assign_lanes(&mut wires, true);
@@ -439,11 +514,26 @@ fn route(blocks: &[Block], segs: &mut Vec<Seg>) {
         } else {
             min_x - OUTSET - wire.lane as i64 * CHANNEL
         };
+        let drop = wire.via.unwrap_or(wire.from.0);
+        if wire.next {
+            push_polyline(
+                segs,
+                &[
+                    wire.from,
+                    (drop, wire.from.1),
+                    (drop, wire.approach),
+                    (wire.entry.0, wire.approach),
+                    wire.entry,
+                ],
+            );
+            continue;
+        }
         push_polyline(
             segs,
             &[
                 wire.from,
-                (wire.from.0, wire.y_clear),
+                (drop, wire.from.1),
+                (drop, wire.y_clear),
                 (channel, wire.y_clear),
                 (channel, wire.approach),
                 (wire.entry.0, wire.approach),
@@ -453,13 +543,35 @@ fn route(blocks: &[Block], segs: &mut Vec<Seg>) {
     }
 }
 
+/// A column right of every node that reaches below `exit`.
+fn drop_column(nodes: &[Node], exit: &Port) -> i64 {
+    nodes
+        .iter()
+        .filter(|node| node.y + node.h > exit.y + 1 && node.x + node.w > exit.x - 4)
+        .map(|node| node.x + node.w)
+        .fold(exit.x, i64::max)
+        + CHANNEL
+}
+
+/// Whether the step from `exit` right to column `x` misses every node.
+fn clear_run(nodes: &[Node], exit: &Port, x: i64) -> bool {
+    !nodes
+        .iter()
+        .any(|node| node.y < exit.y && exit.y < node.y + node.h && node.x > exit.x && node.x < x)
+}
+
 fn assign_lanes(wires: &mut [Wire], forward: bool) {
     let mut order: Vec<usize> = (0..wires.len())
-        .filter(|&index| wires[index].forward == forward)
+        .filter(|&index| wires[index].forward == forward && !wires[index].next)
         .collect();
     order.sort_by_key(|&index| wires[index].y_lo);
     let mut lane_end: Vec<i64> = Vec::new();
+    let mut taken: HashMap<(usize, usize), usize> = HashMap::new();
     for index in order {
+        if let Some(&lane) = taken.get(&wires[index].group) {
+            wires[index].lane = lane;
+            continue;
+        }
         let start = wires[index].y_lo;
         let end = wires[index].y_hi;
         let mut chosen = None;
@@ -474,6 +586,7 @@ fn assign_lanes(wires: &mut [Wire], forward: bool) {
             lane_end.push(end);
             lane_end.len() - 1
         });
+        taken.insert(wires[index].group, wires[index].lane);
     }
 }
 
@@ -671,14 +784,31 @@ fn node_max_x(nodes: &[Node]) -> Option<i64> {
     nodes.iter().map(|node| node.x + node.w).max()
 }
 
+fn state_size(lines: &[String], head: usize) -> (i64, i64) {
+    let widest = lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| text_width(line, FONT) * if index < head { 1.08 } else { 1.0 })
+        .fold(0.0, f64::max);
+    let w = snap(widest.ceil() as i64 + 32).max(64);
+    let name = HEADER + (head.max(1) as i64 - 1) * LINE;
+    let body = lines.len().saturating_sub(head) as i64;
+    let h = if body == 0 {
+        name
+    } else {
+        name + snap(body * LINE + 12).max(28)
+    };
+    (w, h)
+}
+
 fn box_size(lines: &[String]) -> (i64, i64) {
     let widest = lines
         .iter()
         .map(|line| text_width(line, FONT))
         .fold(0.0, f64::max);
     let count = (lines.len() as i64).max(1);
-    let w = snap(widest.ceil() as i64 + 24).max(32);
-    let h = snap(count * LINE + LINE).max(32);
+    let w = snap(widest.ceil() as i64 + 32).max(40);
+    let h = snap(count * LINE + 12).max(28);
     (w, h)
 }
 

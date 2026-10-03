@@ -1735,7 +1735,10 @@ mod tests {
                         waves.contains(">s0</text>") || waves.contains("s0"),
                         "{waves}"
                     );
-                    assert!(tail.contains(">y</text>") || tail.contains("/1"), "{tail}");
+                    assert!(
+                        tail.contains(">y</text>") || tail.contains("\u{f7}1"),
+                        "{tail}"
+                    );
                 } else {
                     assert!(waves.contains(">XOR</text>"), "{waves}");
                     assert!(

@@ -193,6 +193,8 @@ wait:
     1 idle
 ```
 
+![Bus handshake ASM chart](examples/asm.svg)
+
 `name:` at column 0 opens a state. The name is a bare token, or a quoted string when it contains a space or `:`. Lines under the state, in order:
 
 1. Moore outputs, one line each, such as `req=0`. These come before any exit. A state box holds at most 32 lines.
@@ -214,7 +216,7 @@ A decision has exits `0` and `1`, in either order, at the same indent, one step 
   1 idle
 ```
 
-Blocks stack in source order. A link into the state directly below is a straight arrow. Any other link runs in a side channel: forward on the right, back on the left. The text does not carry coordinates, column numbers, or arrow routes.
+Blocks stack in source order. A state is a card with its name in a coloured header and its outputs below. A decision is an amber diamond with `0` and `1` beside its exits. A conditional output is a teal pill. A link into the state directly below is a straight arrow. Any other link runs in a side channel: forward on the right, back on the left. Exits from one state to the same target share one drop column and one channel, and a dot marks where they join. Wires are rounded and end in an arrowhead on the target's entry. The text does not carry coordinates, column numbers, or arrow routes.
 
 Caps: 256 states, 32 lines in one state box, 32 nested decisions. A second exit on a state (`> a` and `> b`, or `>` plus `?`) is an error. A decision that lacks `0` or `1`, repeats one of them, or indents the two exits differently is an error. An unknown target lists the state names. A directive after the first state is an error (`directives belong before the states`).
 
@@ -242,9 +244,11 @@ A file whose first directive is `@hls` is a high-level synthesis schedule. Time 
   / t n -> y !3
 ```
 
+![Scaled sum of products HLS schedule](examples/hls.svg)
+
 Cycle `0` uses two adders and one multiplier. Cycle `1` multiplies `s0` and `s1`; `p` is carried through that cycle because nothing reads it yet. Cycle `2` adds `m` and `p`. Cycle `3` starts a divider that stays busy for three cycles, so cycles 3, 4, and 5 each count one divider, and `y` is ready at the end of cycle 5. No operator reads a value written in the same cycle.
 
-A cycle header is `N:` at column 0. Numbers start at 0, increase, and have no leading zeros. A missing number is still drawn, as an empty band whose count is `+0 *0 /0`. An operator is indented under the cycle it starts in. Canonical indent is two spaces.
+A cycle header is `N:` at column 0. Numbers start at 0, increase, and have no leading zeros. A missing number is still drawn, as an empty band whose usage is `+0 ×0 ÷0`. An operator is indented under the cycle it starts in. Canonical indent is two spaces.
 
 | Line | Unit |
 | --- | --- |
@@ -252,17 +256,19 @@ A cycle header is `N:` at column 0. Numbers start at 0, increase, and have no le
 | `* e f -> p` | Multiplier. |
 | `/ t n -> y` | Divider. |
 
-The two operands are names or integer constants, including negatives (`-2`). The name after `->` is the result. `!N` keeps that unit busy for N cycles, this cycle and the next N−1, and the count on each of those rules includes it. Omit `!N` when the unit lasts one cycle. `!1` is accepted and `--convert` drops it. `--convert` writes `!N` only when N is not 1, and it prints every cycle header from 0 through the last busy cycle, including gaps and the empty tail of a multi-cycle unit.
+The two operands are names or integer constants, including negatives (`-2`). The name after `->` is the result. `!N` keeps that unit busy for N cycles, this cycle and the next N−1, and the usage count of each of those cycles includes it. Its card spans those bands, with a dashed line at each clock edge it crosses and `N cycles` in its corner. Omit `!N` when the unit lasts one cycle. `!1` is accepted and `--convert` drops it. `--convert` writes `!N` only when N is not 1, and it prints every cycle header from 0 through the last busy cycle, including gaps and the empty tail of a multi-cycle unit.
 
 A name that is not yet a result is a primary input (`a`, `b`, `n` in the example). A result becomes readable at cycle `start + N`. Using it earlier, or using a result as its own operand, is an error: `result "s0" is not ready until cycle K; results are ...`. Defining the same result twice is `duplicate result "s0"`. A token in the operand position that is `+`, `*`, `/`, `->`, or starts with `!` is an unknown operand, and the message lists the results defined so far.
 
-The caption on each rule is `N  +a  *m  /d`. `a`, `m`, and `d` count boxes of that kind whose lifetime covers the cycle, including a unit that started earlier and is still busy. Side-by-side boxes are that count. The caption is computed. Do not write it in the file.
+Each band has its cycle number in the left gutter and a usage column on the right: `+a`, `×m`, and `÷d` count cards of that kind whose lifetime covers the cycle, including a unit that started earlier and is still busy. A nonzero count is a pill in that kind's colour; a zero is greyed out. The usage is computed. Do not write it in the file.
 
-A result used later is a 1px wire from the producer's bottom to that operand's port on the consumer. The left operand enters the left port and the right operand enters the right port. A consumer in the same column is a straight drop. A result that never appears again is a live-out and stops in a short stub under its box.
+A card is coloured by its unit: blue for an adder, violet for a multiplier, orange for a divider. It shows the operation glyph, the expression (`a + b`, `s0 × s1`, `t ÷ n`), and `→` the result.
+
+A result used later is a wire in the producer's colour from the bottom of its card to an arrowhead on that operand's port: the left operand enters a third of the way across the consumer, the right operand two thirds. In the routing zone under each row of cards, every result gets its own horizontal track. A value read more than one cycle later drops through its own lane in the gap beside the consumer, so no two wires share a run and no wire passes through a card. A small square marks each clock edge a wire crosses: one register per cycle the value is held. A dot marks where one result branches to several readers. A result that never appears again is a live-out: an arrow under its card ends in a pill with its name.
 
 Caps: 64 cycles, 32 operators started in one cycle, 256 operators in the file. A latency that would pass cycle 63 is an error. Cycle numbers that do not increase are an error. A cycle header that is indented is `a cycle header starts at column 0`. An operator before any cycle is `an operator belongs to a cycle`. `@hls` takes no arguments. A directive after the first cycle is `directives belong before the cycles`.
 
-When generating a schedule: one short line per operator, both operands, a fresh result name, and `!N` only for a unit that stays busy. Order the cycle headers from 0 upward. Do not chain two operators in the same cycle. Do not store coordinates or the `+ n * n / n` counts.
+When generating a schedule: one short line per operator, both operands, a fresh result name, and `!N` only for a unit that stays busy. Order the cycle headers from 0 upward. Do not chain two operators in the same cycle. Do not store coordinates or the usage counts.
 
 Quoted names and constants:
 
@@ -278,7 +284,7 @@ An unquoted integer is a constant. A quoted integer is a name, so `"1"` is not t
 
 ## Gate netlists
 
-A file whose first directive is `@gtl` is a gate-level netlist. Signals run left to right. A box is one gate. Its label is the function. Inputs land on the left border, top to bottom in source order. The output leaves the right border. A name that no gate writes is a primary input and enters from the left. A result that no gate reads is a live-out and ends in a short stub on the right. A later gate reads an earlier result through a 1px orthogonal wire in the gap between columns. Indentation does not change the picture. `#` comments, `@title`, and `@footer` work as they do on a timing diagram. `@end`, `@asm`, `@hls`, and `@wvf` are not used.
+A file whose first directive is `@gtl` is a gate-level netlist. Signals run left to right. Each gate is its distinctive-shape symbol (`AND`, `OR`, `XOR`, a `NOT` triangle, a `MUX` trapezoid) with its function written inside. `NOT`, `NAND`, `NOR`, and `XNOR` end in an inversion bubble. Inputs land on the left, top to bottom in source order; a mux takes its data inputs on the left, marked `0` and `1`, and its select from below. The output leaves on the right. A name that no gate writes is a primary input: a teal pill on a short stub. An integer tie-off is a grey pill. A result that no gate reads is a live-out: a red pill on the right. Every other result is named in small text on its wire. A gate slides down its column to line its input up with the gate that drives it, so a chain is one straight line. A later gate reads an earlier result through a rounded orthogonal wire with its own track in the gap between columns. A wire that skips columns runs straight across when its row is clear, and otherwise steps to the nearest free row. A dot marks where one net branches. Indentation does not change the picture. `#` comments, `@title`, and `@footer` work as they do on a timing diagram. `@end`, `@asm`, `@hls`, and `@wvf` are not used.
 
 `examples/gtl.tgw`:
 
@@ -291,6 +297,8 @@ not d -> nd
 mux nd a b -> y
 ```
 
+![Select and invert gate netlist](examples/gtl.svg)
+
 `xor` and `not` form a chain. `mux` takes the select first (`nd`), then the two data inputs (`a`, `b`). `y` is the live-out. `a` and `b` are primary inputs.
 
 Each gate line is `kind inputs -> output`. The kind decides how many inputs are legal. The parser asks the kind, so the line is not fixed at two operands. The owned model stores `inputs` and `outputs` as lists. Every kind has one output today. A later kind with more ports is a new kind and a new count, not a new placer.
@@ -298,8 +306,8 @@ Each gate line is `kind inputs -> output`. The kind decides how many inputs are 
 | Kind | Inputs | Output |
 | --- | --- | --- |
 | `and`, `or`, `xor` | two | one |
-| `nand`, `nor`, `xnor` | two, and a filled square on the output | one |
-| `not` | one, and a filled square on the output | one |
+| `nand`, `nor`, `xnor` | two, and an inversion bubble on the output | one |
+| `not` | one, and an inversion bubble on the output | one |
 | `mux` | select, then two data inputs | one |
 
 `not a -> y`. `mux s a b -> y`. `and a b -> y`. Operands are names or integer tie-offs (`0`, `1`, `-1`). A quoted integer stays a name, so `"1"` is not the constant `1`. Quotes and escapes match timing labels.
@@ -318,7 +326,7 @@ Bus transitions cross at the same point, and a label is centered on the visible 
 
 A long clock is one shared pattern. A long hold is one stroke. `@bounds` drops geometry outside the window, including annotations, instead of emitting it and hiding it. `render_into` reuses the caller's buffer. Text is measured against a conservative sans-serif, so a label's exact width can differ slightly by platform.
 
-ASM boxes, HLS boxes, and gate boxes sit on a pixel grid. Text plus padding is snapped outward to 4px. The border is a filled ink ring with a paper rectangle inset by 1px, so a 1px edge stays on whole pixels. A gate grows taller as its input count grows, so each port stays on its own border pixel. `NOT`, `NAND`, `NOR`, and `XNOR` add a filled square on the output border. HLS cycle rules and the wires in a schedule or a netlist are 1px filled rectangles. Text is the only antialiased paint. The root transform is `translate(8,8)`.
+ASM boxes, HLS cards, and every pill sit on a pixel grid. Text plus padding is snapped outward to 4px. A border is a filled rounded rectangle with its fill inset by 1px, so a 1px edge stays on whole pixels. HLS cycle rules are 1px filled rectangles. A wire in a chart, a schedule, or a netlist is a 2px stroke centred on whole-pixel coordinates, so each straight run covers exactly two pixel rows or columns at any whole-number scale; only its rounded corners, gate outlines, diamonds, bubbles, dots, and text are antialiased. Both palettes have a dark twin for the window. The root transform is `translate(8,8)`.
 
 ```sh
 cargo run --release --example long_wave

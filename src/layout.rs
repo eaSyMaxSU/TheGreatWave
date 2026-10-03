@@ -689,7 +689,7 @@ mod tests {
         )
         .unwrap();
         assert!(whole.contains("s0"));
-        assert!(whole.contains("/1"));
+        assert!(whole.contains("\u{f7}1"));
         let tight = layout_diagram(&frame, 120.0, 80.0, 0.0, 0.0).unwrap();
         assert!((tight.scale - 1.0).abs() < 0.01);
         assert!(tight.show_h && tight.show_v);
