@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Orb setup for The Great Wave. Runs once for a fresh orb; must be idempotent
+# and fast on a warm filesystem. See https://ampcode.com/docs/orbs.
+#
+# The repo is a Rust workspace pinned by rust-toolchain.toml (1.98.0 with
+# clippy and rustfmt). The default "view" feature pulls in gpui-kit, which on
+# Linux links against libxkbcommon-x11 and rasterizes through Vulkan; the base
+# template already ships gcc, pkg-config, and Mesa's software Vulkan drivers
+# (lavapipe), so only the xkbcommon dev packages are missing.
+set -euo pipefail
+
+export PATH="$HOME/.cargo/bin:$PATH"
+started=$SECONDS
+step() { printf '\n=== %s (at %ss) ===\n' "$*" "$((SECONDS - started))"; }
+
+# Run apt-get through sudo only when not already root.
+sudo_sh() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
+
+# System packages needed to link the tgw test binaries against gpui-kit.
+if dpkg -s libxkbcommon-dev >/dev/null 2>&1 && dpkg -s libxkbcommon-x11-dev >/dev/null 2>&1; then
+  step "system packages already present"
+else
+  step "installing system packages"
+  sudo_sh apt-get update -qq
+  sudo_sh apt-get install -y -qq libxkbcommon-dev libxkbcommon-x11-dev
+fi
+
+# Rustup with the pinned toolchain. The installer gets no default toolchain so
+# the version comes only from rust-toolchain.toml in the repository.
+if [ -x "$HOME/.cargo/bin/rustup" ]; then
+  step "rustup already installed"
+else
+  step "installing rustup"
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
+    sh -s -- -y --profile minimal --default-toolchain none
+fi
+
+# Running any rustup command inside the repository installs the pinned
+# toolchain and components; it exits quickly when they are already present.
+step "rust toolchain"
+rustup toolchain install
+
+# Warm the build so a fresh orb can compile, test, and lint immediately. The
+# target directory rides along in the project snapshot.
+step "cargo fetch"
+cargo fetch --locked
+
+step "cargo build --tests"
+cargo build --tests
+
+# Pixel tests drop rasters here; keep the snapshot lean if a previous test run
+# left them behind.
+rm -rf target/asm-shots target/gtl-shots target/hls-shots
+
+step "setup complete in $((SECONDS - started))s"
