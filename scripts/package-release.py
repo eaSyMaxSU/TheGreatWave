@@ -40,7 +40,7 @@ def main():
             shutil.copy2(root / "assets/icon/tgw.svg", package)
 
         version = subprocess.check_output([str(binary), "--version"], cwd=package, text=True)
-        assert version.strip() == f"tgw {args.tag.removeprefix('v')}", version
+        assert version.strip() == args.tag.removeprefix("v"), version
         help_text = subprocess.check_output([str(binary), "--help"], cwd=package, text=True)
         assert "--view" in help_text and "--watch" in help_text
         assert "This build" not in help_text, "release must include both view and watch"
