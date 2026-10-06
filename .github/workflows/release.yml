@@ -1,0 +1,139 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: New release tag matching Cargo.toml (for example v0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            rustflags: ""
+          - os: macos-15
+            target: aarch64-apple-darwin
+            rustflags: ""
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            rustflags: "-C target-feature=+crt-static"
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_PROFILE_RELEASE_STRIP: symbols
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake pkg-config libfontconfig1-dev \
+            libfreetype6-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libssl-dev libvulkan-dev
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup show
+          rustup target add '${{ matrix.target }}'
+      - name: Check release version
+        run: |
+          cargo metadata --locked --no-deps --format-version 1 | python -c '
+          import json, os, sys
+          version = json.load(sys.stdin)["packages"][0]["version"]
+          assert os.environ["RELEASE_TAG"] == "v" + version, "tag must match Cargo.toml version"
+          '
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            existing="$(git ls-remote --tags origin "refs/tags/$RELEASE_TAG")"
+            test -z "$existing" || { echo "Manual releases require a new tag"; exit 1; }
+          fi
+      - name: Build combined renderer, viewer, and watcher
+        run: cargo build --locked --release --bin tgw --target '${{ matrix.target }}'
+      - name: Test release build
+        run: cargo test --locked --release --target '${{ matrix.target }}'
+      - name: Package and smoke-test executable
+        run: python scripts/package-release.py '${{ matrix.target }}' "$RELEASE_TAG"
+      - name: Inspect native dependencies
+        if: runner.os != 'Windows'
+        run: |
+          case '${{ runner.os }}' in
+            Linux) ldd target/${{ matrix.target }}/release/tgw ;;
+            macOS) otool -L target/${{ matrix.target }}/release/tgw ;;
+          esac
+      - name: Inspect Windows DLL dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1
+          & $dumpbin.FullName /DEPENDENTS target/${{ matrix.target }}/release/tgw.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tgw-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish all three platforms
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tgw-*
+          merge-multiple: true
+          path: dist
+      - name: Publish release with checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat > /tmp/release-notes.md <<'NOTES'
+          One executable per platform, with the renderer, live viewer, and file watcher enabled. Extract the archive; no Rust installation or source checkout is needed. Each archive includes examples and documentation.
+
+          | Platform | Download suffix | Requirements |
+          | --- | --- | --- |
+          | macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` | macOS 15 or newer |
+          | Arch Linux x86_64 | `x86_64-unknown-linux-gnu.tar.gz` | X11 or Wayland, system libraries and a Vulkan driver (see README) |
+          | Windows x86_64 | `x86_64-pc-windows-msvc.zip` | Windows 10 or newer; C runtime statically linked |
+
+          From the extracted folder:
+
+          ```sh
+          ./tgw examples/transfer.tgw -o transfer.svg
+          ./tgw examples/transfer.tgw --view
+          ./tgw examples/transfer.tgw -o transfer.svg --watch
+          ```
+
+          In Windows PowerShell, use `.\tgw.exe` instead of `./tgw`. `--view` already watches for edits; add `-o transfer.svg` to update an SVG file as well. All four diagram types are supported.
+
+          The binaries are unsigned and macOS is not notarized. Only after verifying the download and checksum, use the operating system's per-file approval if it blocks execution; see the bundled README. SHA256SUMS covers all three archives.
+
+          Native release tests cover rendering and watch-mode updates on each platform. Interactive viewer tests need a desktop and are not run by this workflow.
+          NOTES
+          gh release create "$RELEASE_TAG" *.tar.gz *.zip SHA256SUMS \
+            --target "$RELEASE_COMMIT" --title "The Great Wave $RELEASE_TAG" --notes-file /tmp/release-notes.md

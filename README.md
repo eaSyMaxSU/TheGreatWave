@@ -11,6 +11,39 @@
 | `@hls` | High-level synthesis schedule | `class="tgw hls"` | `examples/hls.tgw` |
 | `@gtl` | Gate-level netlist | `class="tgw gtl"` | `examples/gtl.tgw` |
 
+## Download and run
+
+Download the matching archive from [GitHub Releases](https://github.com/eaSyMaxSU/TheGreatWave/releases/latest). Every download contains the **combined renderer, viewer, and watcher**; no Rust installation or source checkout is needed. Extract it and run `tgw` from a terminal, or copy the executable to a directory on your `PATH`. Examples, this README, and the license are included.
+
+| Platform | Archive suffix | Requirements |
+| --- | --- | --- |
+| macOS Apple Silicon (ARM64) | `aarch64-apple-darwin.tar.gz` | macOS 15 or newer |
+| Arch Linux x86_64 | `x86_64-unknown-linux-gnu.tar.gz` | System libraries below; X11 or Wayland and a Vulkan driver for the viewer |
+| Windows x86_64 | `x86_64-pc-windows-msvc.zip` | Windows 10 or newer; the C runtime is statically linked |
+
+From the extracted directory, on macOS or Linux:
+
+```sh
+./tgw examples/transfer.tgw -o transfer.svg          # render once
+./tgw examples/transfer.tgw --view                   # view, refreshing on edits
+./tgw examples/transfer.tgw -o transfer.svg --watch  # refresh the file on edits
+```
+
+On Windows PowerShell, replace `./tgw` with `.\tgw.exe`. To update both the window and an SVG file, use `--view -o transfer.svg`. `--view` already watches the input; there is no need to add `--watch`. The executable does not need the bundled examples or documentation beside it.
+
+On Arch Linux, install the shared runtime libraries if they are not already present:
+
+```sh
+sudo pacman -S --needed glibc gcc-libs fontconfig freetype2 libxkbcommon \
+  libxkbcommon-x11 wayland libxcb libx11 openssl vulkan-icd-loader
+```
+
+The viewer also needs a Vulkan driver for your GPU, such as `vulkan-intel`, `vulkan-radeon`, or `nvidia-utils`. These are system dependencies, not extra tgw files. The Linux release is built on Ubuntu 22.04 (glibc 2.35 baseline) and is intended to work on current Arch Linux. For an optional Wayland launcher/icon, put `tgw` on `PATH`, install the bundled `tgw.desktop` into `~/.local/share/applications/`, and `tgw.svg` into `~/.local/share/icons/hicolor/scalable/apps/`.
+
+Releases include `SHA256SUMS`. Verify with `sha256sum -c SHA256SUMS --ignore-missing` on Linux, `shasum -a 256 ARCHIVE` on macOS, or `Get-FileHash ARCHIVE -Algorithm SHA256` on Windows (compare the result with `SHA256SUMS`). Downloads are **unsigned**, and the macOS binary is not notarized. macOS may require approval in System Settings → Privacy & Security after the first launch. If a trusted, checksum-verified download remains quarantined, remove quarantine only from that executable with `xattr -d com.apple.quarantine ./tgw`. Windows may show SmartScreen; approve only the verified file, without disabling system-wide protection.
+
+## Input format
+
 The first non-comment directive chooses the picture. `#` is a comment. `//` is not. A file is one picture: do not mix `@wvf`, `@asm`, `@hls`, and `@gtl`. The text describes the picture. It does not store coordinates, wire routes, or operator counts. A timing diagram that omits `@wvf` still renders, and `--convert` writes `@wvf` at the top.
 
 ```text
@@ -357,6 +390,8 @@ A program that only renders can depend on the library with `default-features = f
 | `cargo build --release --no-default-features` | Renderer only, no dependencies |
 
 `tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler.
+
+The release workflow builds and tests all three native targets with default features and `--locked`. Run the **Release** workflow with a new tag such as `v0.1.0`, or push a `v*` tag; the tag must match the package version in `Cargo.toml`. Only after all targets pass does it publish the archives and checksums to GitHub Releases. A manual run creates its tag at the tested commit when publishing. Desktop-only viewer tests remain opt-in; the automated release tests exercise rendering and file watching, and the packager smoke-tests the copied executable outside the source tree.
 
 ## Platforms
 
