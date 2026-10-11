@@ -181,7 +181,7 @@ pub(crate) fn parse(source: &str) -> Result<Schedule, Error> {
         op.cycle = cycle;
         op.leading = line.leading.clone();
         op.trailing = line.trailing.clone();
-        if op.cycle + op.latency > MAX_CYCLES {
+        if op.latency > MAX_CYCLES - op.cycle {
             return Err(err(op.at, "schedule exceeds 64 cycles"));
         }
         schedule.ops.push(op);

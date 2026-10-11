@@ -628,6 +628,7 @@ fn hls_edge_cases_are_errors() {
             "must increase",
         ),
         ("@hls\n60:\n  / a b -> y !8\n", "64"),
+        ("@hls\n1:\n  + a b -> s !4294967295\n", "64"),
     ];
     for (source, needle) in cases {
         let error = tgw::render(source).unwrap_err();
@@ -638,6 +639,8 @@ fn hls_edge_cases_are_errors() {
         );
         assert!(error.offset <= source.len(), "{source:?}");
     }
+
+    assert!(tgw::render("@hls\n63:\n  + a b -> s\n").is_ok());
 
     let mut wide = String::from("@hls\n0:\n");
     for i in 0..33 {
