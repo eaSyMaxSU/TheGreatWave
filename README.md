@@ -11,6 +11,21 @@
 | `@hls` | High-level synthesis schedule | `class="tgw hls"` | `examples/hls.tgw` |
 | `@gtl` | Gate-level netlist | `class="tgw gtl"` | `examples/gtl.tgw` |
 
+Use timing diagrams to explain signal relationships, ASM charts to describe controller behavior, HLS schedules to show when arithmetic runs, and gate netlists to show combinational connections. The input is UTF-8 text and the output is SVG: keep the source in version control, review changes as text, and embed the rendered picture in documentation. tgw draws the description you supply; it does not simulate a circuit, choose an HLS schedule, or synthesize RTL.
+
+## Contents
+
+- [Download and run](#download-and-run)
+- [Quick start](#quick-start)
+- [Input format](#input-format) and [writing a file](#writing-a-file)
+- [Render](#render), [command-line reference](#command-line-reference), and [convert](#convert)
+- [Watch and view](#watch-and-view)
+- Language reference: [timing diagrams](#timing-diagrams), [ASM charts](#asm-charts), [HLS schedules](#hls-schedules), and [gate netlists](#gate-netlists)
+- [Example cookbook](#example-cookbook)
+- [Picture](#picture) and [library integration](#library)
+- [Builds](#builds), [platforms](#platforms), and [troubleshooting](#troubleshooting)
+- [Icon](#icon), [checks](#checks), and [license](#license)
+
 ## Download and run
 
 Download the matching archive from [GitHub Releases](https://github.com/eaSyMaxSU/TheGreatWave/releases/latest). Every download contains the **combined renderer, viewer, and watcher**; no Rust installation or source checkout is needed. Extract it and run `tgw` from a terminal, or copy the executable to a directory on your `PATH`. Examples, this README, and the license are included.
@@ -41,6 +56,46 @@ sudo pacman -S --needed glibc gcc-libs fontconfig freetype2 libxkbcommon \
 The viewer also needs a Vulkan driver for your GPU, such as `vulkan-intel`, `vulkan-radeon`, or `nvidia-utils`. These are system dependencies, not extra tgw files. The Linux release is built on Ubuntu 22.04 (glibc 2.35 baseline) and is intended to work on current Arch Linux. For an optional Wayland launcher/icon, put `tgw` on `PATH`, install the bundled `tgw.desktop` into `~/.local/share/applications/`, and `tgw.svg` into `~/.local/share/icons/hicolor/scalable/apps/`.
 
 Releases include `SHA256SUMS`. Verify with `sha256sum -c SHA256SUMS --ignore-missing` on Linux, `shasum -a 256 ARCHIVE` on macOS, or `Get-FileHash ARCHIVE -Algorithm SHA256` on Windows (compare the result with `SHA256SUMS`). Downloads are **unsigned**, and the macOS binary is not notarized. macOS may require approval in System Settings → Privacy & Security after the first launch. If a trusted, checksum-verified download remains quarantined, remove quarantine only from that executable with `xattr -d com.apple.quarantine ./tgw`. Windows may show SmartScreen; approve only the verified file, without disabling system-wide protection.
+
+## Quick start
+
+After installing the executable on `PATH`, save this as `handshake.tgw`:
+
+```text
+@wvf
+@title Request and acknowledge
+@tick 0
+
+clk:   P.......
+req:   01...0..
+ack:   0..1..0.
+data:  x.3...x. => "valid data"
+```
+
+Render it, then open `handshake.svg` in a browser or image viewer:
+
+```sh
+tgw handshake.tgw -o handshake.svg
+```
+
+For an editing session, keep the native viewer and the exported SVG up to date together:
+
+```sh
+tgw handshake.tgw --view -o handshake.svg
+```
+
+Edit and save `handshake.tgw` in your usual editor. The viewer reloads automatically; if a save contains a syntax error, it keeps the last good picture until the next valid save. On a machine without a desktop, use `--watch -o handshake.svg` instead of `--view`.
+
+To build a renderer without GUI or watcher dependencies from source:
+
+```sh
+git clone https://github.com/eaSyMaxSU/TheGreatWave.git
+cd TheGreatWave
+cargo build --locked --release --no-default-features
+./target/release/tgw examples/transfer.tgw -o transfer.svg
+```
+
+Install [Rust through rustup](https://rustup.rs/) first; the checkout selects the compiler pinned in `rust-toolchain.toml`. See [builds](#builds) for watcher and viewer builds. Commands below assume `tgw` is on `PATH`; use `./tgw`, `.\tgw.exe`, or `./target/release/tgw` as appropriate for your installation.
 
 ## Input format
 
@@ -84,6 +139,38 @@ cargo build --release
 
 A render refuses to replace the diagram with the SVG. The same path, a symlink, and a hard link are all the same file. On Windows, a different case of the name is the same file too.
 
+### Command-line reference
+
+| Argument or option | Meaning |
+| --- | --- |
+| `INPUT` | One `.tgw` input file; omit it or use `-` for stdin. |
+| `-i PATH`, `--input PATH` | Alternative to positional `INPUT`; do not supply both. |
+| `-o PATH`, `--output PATH` | Write to a file; omit it or use `-` for stdout in one-off mode. |
+| `--convert` | Write canonical `.tgw` text instead of SVG. |
+| `-t N`, `--indent N` | SVG indentation in spaces, from 0 to 255; 0 is compact. |
+| `-w`, `--watch` | Watch a real input file and refresh the file selected by `-o`. Requires the `watch` feature. |
+| `--view` | Open the live viewer; `-o` is optional. Requires the `view` feature. |
+| `-h`, `--help` | Print usage and build-specific feature information. |
+| `-v`, `--version` | Print the package version. |
+| `--` | End option parsing, for example `tgw -- -diagram.tgw`. |
+
+Options with values also accept `--input=diagram.tgw`, `--output=diagram.svg`, and `--indent=2`. Quote paths containing spaces. Output directories must already exist. A successful command exits with status 0; an error exits with status 1 and writes its diagnostic to stderr.
+
+```sh
+# Explicit input and formatted SVG output.
+tgw --input examples/asm.tgw --output asm.svg --indent 2
+
+# A small diagram supplied through a Unix shell pipeline.
+printf '@wvf\nclk: p...\nready: 01..\n' | tgw - -o ready.svg
+
+# Render all bundled .tgw examples into a separate directory (POSIX shell).
+mkdir -p rendered
+for source in examples/*.tgw; do
+  name="${source##*/}"
+  tgw "$source" -o "rendered/${name%.tgw}.svg" || exit 1
+done
+```
+
 ## Convert
 
 ```sh
@@ -94,6 +181,16 @@ A render refuses to replace the diagram with the SVG. The same path, a symlink, 
 ```
 
 `--convert` reprints a timing diagram starting with `@wvf` and aligned columns, an ASM chart at a 2-space indent, an HLS schedule with every cycle header filled in, and a gate netlist as `@gtl` followed by one gate per line. Supported data is kept. A `#` comment stays with the construct it precedes, including an end-of-line note. `--convert` cannot be combined with `--watch` or `--view`.
+
+To review a formatted version without modifying the original:
+
+```sh
+tgw handshake.tgw --convert -o handshake.formatted.tgw
+diff -u handshake.tgw handshake.formatted.tgw
+tgw handshake.formatted.tgw -o handshake.formatted.svg
+```
+
+Conversion is formatting, not translation between diagram types or import from WaveDrom JSON. Do not use `tgw handshake.tgw --convert > handshake.tgw`: the shell truncates the input before tgw can read it. Write to a separate file, review it, and then replace the source if desired.
 
 ## Watch and view
 
@@ -353,6 +450,146 @@ Caps: 256 gates, logic depth 64, and 8 inputs or 8 outputs on one gate. Depth is
 
 When generating a netlist: one short line per gate, the kind's inputs in port order, and a fresh result name. Do not store coordinates or wire routes.
 
+## Example cookbook
+
+Each example below is a complete input file. Save a block as `recipe.tgw` and run `tgw recipe.tgw -o recipe.svg`. Use `tgw recipe.tgw --convert` to inspect its canonical form. The [bundled examples](examples/) also include ready-rendered SVGs; [test fixtures](tests/fixtures/) contain more syntax and layout edge cases.
+
+### Annotate a setup interval
+
+Node masks attach named positions to signals. Bracketed names occupy one position, just like a single-letter name. Here `setup` is at cycle 2 on `data`, and `sample` is at cycle 3 on `clk`:
+
+```text
+@wvf
+@title Data setup before sampling
+@tick 0
+
+clk:  0..1.0.. ; node=...[sample]....
+data: x.3...x. => payload ; node=..[setup].....
+
+@edge setup~>sample "tSU"
+```
+
+The edge is an annotation between the supplied positions, not a measured timing constraint or a setup-time check.
+
+### Group lanes and highlight activity
+
+Groups organize the name column; `over` and `under` mark intervals independently of the waveform. Close every group with `@end`.
+
+```text
+@wvf
+@title Write transaction
+@tick 0
+
+@group Master
+  clk:     P.......
+  address: x3...x.. => 0x20
+  write:   01..0... ; over=.1..0...
+@end
+@group Slave
+  ready:   0..1.0.. ; under=...2.0..
+@end
+```
+
+### Zoom into part of a trace
+
+`@bounds 2 6` draws cycles 2 through 5, not cycle 6. `@scale` changes cycle width; it does not change the signal data. Fractional numeric ticks can express time units instead of cycle indices.
+
+```text
+@wvf
+@title Detail of a transfer
+@bounds 2 6
+@scale 2
+@tick 0 0.5
+@footer Time in microseconds
+
+clk:  P.......
+data: x.3.4.x. => command reply
+busy: 01...0..
+```
+
+Because the tick step is 0.5 rather than 1, the numeric series retains the explicit start value. See the timing reference for the interaction between ticks and bounds.
+
+### Mix digital and analog lanes
+
+SVG path coordinates use cycles horizontally and normalized low/high rail values vertically. This trace rises, holds, and falls alongside a digital enable:
+
+```text
+@wvf
+@title Analog response
+@tick 0
+
+enable: 01...0..
+voltage: path M0,0 L1,0 C1.5,0 1.5,1 2,1 H4 L5,0 H8
+```
+
+The path is supplied geometry, not the result of an analog simulation.
+
+### Build a controller with a terminal state
+
+`> state` is an unconditional transition. A state with no exit is terminal. This controller stays in `idle` until `start`, drives a conditional output on entry to `run`, then stops at `done`:
+
+```text
+@asm
+@title One-shot controller
+
+idle:
+  busy=0
+  ? start
+    0 idle
+    1 (load=1) run
+run:
+  busy=1
+  > done
+done:
+  busy=0
+  valid=1
+```
+
+### Schedule a multi-cycle result and an idle cycle
+
+The multiplier starts at cycle 0 and is busy in cycles 0 and 1. Its result is readable from cycle 2; the consumer below waits until cycle 3. Omitted cycle headers still appear in the drawing and in canonical output.
+
+```text
+@hls
+@title Multiply, hold, and offset
+
+0:
+  * a b -> product !2
+3:
+  + product -2 -> adjusted
+```
+
+Moving the addition to cycle 1 is an error, not a way to express forwarding. Operator lifetimes and value availability are checked, but scheduling is your responsibility.
+
+### Draw a mux with an enable condition
+
+Mux port order is **select, data 0, data 1**. This netlist combines enable signals and chooses between the two data inputs:
+
+```text
+@gtl
+@title Enabled data selection
+
+and enable valid -> select
+mux select data0 data1 -> chosen
+not chosen -> inverted
+```
+
+The gates must be in producer-before-consumer order. This is a combinational netlist; feedback and sequential storage are not supported gate kinds.
+
+### Use tie-offs and quoted names
+
+An unquoted integer is a constant; a quoted integer is a signal name. This example uses the named signal `"1"` and the constant `1` in the same gate:
+
+```text
+@gtl
+@title Names versus constants
+
+and "1" 1 -> "masked value"
+xor "masked value" 0 -> result
+```
+
+Use quotes for multi-word names rather than trying to align the tokens with spaces. Alignment is cosmetic in netlists, but indentation defines structure in ASM and HLS files.
+
 ## Picture
 
 Bus transitions cross at the same point, and a label is centered on the visible part of its value. A gap clears the trace underneath it. Each SVG has a title, a description, and paint ids that belong to that document only. There is no global stylesheet, so several diagrams can sit on one page.
@@ -380,6 +617,68 @@ let editable = tgw::to_tgw("clk: p...")?;
 `render`, `render_into`, and `to_tgw` accept all four pictures. `render_opts` indents the SVG. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_opts` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
 A program that only renders can depend on the library with `default-features = false`.
+
+### Add the library to a Rust application
+
+The package is not published to crates.io (`publish = false`). Use a Git dependency, or a path dependency when the repository is checked out beside your application:
+
+```toml
+[dependencies]
+tgw = { git = "https://github.com/eaSyMaxSU/TheGreatWave", default-features = false }
+# Local alternative (use this instead of the Git dependency):
+# tgw = { path = "../TheGreatWave", default-features = false }
+```
+
+For reproducible builds, commit your application's `Cargo.lock`; a Git dependency can also be pinned with `rev` to a chosen commit. The rendering library uses no third-party dependencies with default features disabled.
+
+This complete program reads a source file, writes an SVG, and writes a separately named canonical source file:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let source = std::fs::read_to_string("handshake.tgw")?;
+    let svg = tgw::render(&source)?;
+    std::fs::write("handshake.svg", svg)?;
+
+    let canonical = tgw::to_tgw(&source)?;
+    std::fs::write("handshake.formatted.tgw", canonical)?;
+    Ok(())
+}
+```
+
+### Reuse a buffer and choose a palette
+
+All buffer-writing APIs clear the supplied `Vec<u8>` before rendering; they replace its contents rather than append another document. Reuse the allocation when rendering several diagrams:
+
+```rust
+fn main() -> Result<(), tgw::Error> {
+    let source = "@gtl\nxor a b -> result\n";
+    let mut svg = Vec::new();
+
+    tgw::render_into(source, &mut svg)?; // Compact, light SVG.
+    tgw::render_opts(source, &mut svg, 2)?; // Indented, light SVG.
+    tgw::render_themed(source, &mut svg, 0, &tgw::scheme::DARK)?;
+    assert!(svg.starts_with(b"<svg"));
+    Ok(())
+}
+```
+
+The CLI saves light SVGs even when the viewer is dark. Use `render_themed` in an application when you need a dark SVG export.
+
+### Handle diagnostics
+
+Library errors expose `offset` (a byte offset into the input, not a character index) and `message`. This matters for UTF-8 names: do not treat a byte offset as a column number without accounting for the preceding text.
+
+```rust
+fn main() {
+    let source = "@gtl\nnot a b -> y\n"; // NOT takes only one input.
+    match tgw::render(source) {
+        Ok(svg) => println!("{svg}"),
+        Err(error) => eprintln!("byte {}: {}", error.offset, error.message),
+    }
+}
+```
+
+Use the CLI when you want ready-made `path:line:column` diagnostics. Embed the library when your application needs the SVG string, custom diagnostics, or direct control over the output buffer and palette.
 
 ## Builds
 
@@ -411,6 +710,23 @@ cargo install --path .
 install -Dm644 assets/linux/tgw.desktop ~/.local/share/applications/tgw.desktop
 install -Dm644 assets/icon/tgw.svg ~/.local/share/icons/hicolor/scalable/apps/tgw.svg
 ```
+
+## Troubleshooting
+
+| Symptom | What to check |
+| --- | --- |
+| `tgw` is not found | Put the executable on `PATH`, or use its explicit path (`./tgw` on Unix, `.\tgw.exe` in PowerShell). |
+| The command waits without producing output | With no input file, tgw reads stdin until EOF. Supply a file or pipe input to it. |
+| `--view` or `--watch` is unavailable | Check `tgw --help`; renderer-only builds omit both, and watcher-only builds omit the window. Rebuild with the appropriate features or use the combined release binary. |
+| The viewer cannot open on Linux | Check for a working X11 or Wayland session, required shared libraries, and a Vulkan driver. On a headless server, render once or use `--watch`. |
+| A save leaves the old picture visible | Read the viewer status bar or watcher stderr. Invalid input, a missing source, or a failed output write keeps the last good picture. Fix the problem and save again. |
+| Writing the SVG fails | Create the output directory first and check permissions. A one-off output must not refer to the source diagram itself. |
+| A `#` unexpectedly removes part of a label | Quote text containing `#`. Use `#` for comments, not `//`. |
+| An ASM decision is rejected | Include exactly one `0` and one `1` exit at the same indent, one level below the decision. |
+| An HLS result is not ready | A result from cycle `C` with latency `N` can first be read in cycle `C + N`, never in the cycle that starts its producer. |
+| A netlist reports a forward reference | Put each producer before its consumers; loops and self-references are rejected. Check mux input order too. |
+
+When reporting a problem, include `tgw --version`, your OS, the build features if building from source, the exact command, the complete diagnostic, and the smallest `.tgw` file that reproduces it. For a viewer-only problem, note whether a one-off SVG render succeeds.
 
 ## Icon
 
