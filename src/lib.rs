@@ -69,12 +69,7 @@ pub fn render_into(source: &str, out: &mut Vec<u8>) -> Result<(), Error> {
 }
 
 pub fn render_opts(source: &str, out: &mut Vec<u8>, indent: u8) -> Result<(), Error> {
-    out.clear();
-    if let Err(e) = write_picture(&parse(source)?, out, indent, &scheme::LIGHT) {
-        out.clear();
-        return Err(e);
-    }
-    Ok(())
+    render_themed(source, out, indent, &scheme::LIGHT)
 }
 
 enum Picture {

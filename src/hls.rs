@@ -4,9 +4,11 @@
 //! `!N` keeps the unit busy for N cycles. The text is the schedule; nothing
 //! in the file is a coordinate.
 
-use crate::native::{split_comment, tokens};
+use crate::format::quoted;
+use crate::native::{raw_lines, split_comment, tokens, Raw};
 use crate::scan::Remark;
 use crate::Error;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 const MAX_CYCLES: u32 = 64;
@@ -73,14 +75,6 @@ pub(crate) struct Notes {
     pub title: Remark,
     pub footer: Remark,
     pub end: Vec<String>,
-}
-
-struct Raw {
-    indent: usize,
-    text: String,
-    at: usize,
-    leading: Vec<String>,
-    trailing: Option<String>,
 }
 
 pub(crate) fn starts_with_hls(source: &str) -> bool {
@@ -296,7 +290,6 @@ fn parse_op(text: &str, at: usize, earlier: &[Op]) -> Result<Op, Error> {
     }
     let rest = rest.trim_start();
     let rest_at = at + text.len() - rest.len();
-    let quoted = quote_flags(rest);
     let parts = tokens(rest, rest_at)?;
     if parts.len() != 4 && parts.len() != 5 {
         return Err(err(at, "operator needs two operands and a result"));
@@ -306,17 +299,17 @@ fn parse_op(text: &str, at: usize, earlier: &[Op]) -> Result<Op, Error> {
     }
     let left = operand(
         &parts[0],
-        quoted.first().copied().unwrap_or(false),
+        matches!(parts[0], Cow::Owned(_)),
         rest_at,
         earlier,
     )?;
     let right = operand(
         &parts[1],
-        quoted.get(1).copied().unwrap_or(false),
+        matches!(parts[1], Cow::Owned(_)),
         rest_at,
         earlier,
     )?;
-    let result = result_name(&parts[3], quoted.get(3).copied().unwrap_or(false), at)?;
+    let result = result_name(&parts[3], matches!(parts[3], Cow::Owned(_)), at)?;
     let latency = if parts.len() == 5 {
         parse_latency(&parts[4], at)?
     } else {
@@ -388,46 +381,6 @@ fn parse_latency(token: &str, at: usize) -> Result<u32, Error> {
         .map_err(|_| err(at, "latency must be a positive integer"))
 }
 
-fn quote_flags(src: &str) -> Vec<bool> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < src.len() {
-        let c = src[i..].chars().next().unwrap();
-        if c.is_whitespace() {
-            i += c.len_utf8();
-            continue;
-        }
-        if c == '"' || c == '\'' {
-            let quote = c;
-            out.push(true);
-            i += c.len_utf8();
-            while i < src.len() {
-                let c = src[i..].chars().next().unwrap();
-                i += c.len_utf8();
-                if c == '\\' {
-                    if let Some(escaped) = src[i..].chars().next() {
-                        i += escaped.len_utf8();
-                    }
-                    continue;
-                }
-                if c == quote {
-                    break;
-                }
-            }
-        } else {
-            out.push(false);
-            while i < src.len() {
-                let c = src[i..].chars().next().unwrap();
-                if c.is_whitespace() {
-                    break;
-                }
-                i += c.len_utf8();
-            }
-        }
-    }
-    out
-}
-
 fn resolve(schedule: &Schedule) -> Result<(), Error> {
     let mut ready: HashMap<&str, u32> = HashMap::new();
     for (index, op) in schedule.ops.iter().enumerate() {
@@ -474,43 +427,6 @@ pub(crate) fn operand_name(operand: &Operand) -> Option<&str> {
         Operand::Name(name) => Some(name),
         Operand::Const(_) => None,
     }
-}
-
-fn raw_lines(source: &str) -> Result<Vec<Raw>, Error> {
-    let mut lines = Vec::new();
-    let mut pending = Vec::new();
-    let mut offset = 0;
-    for raw in source.split_inclusive('\n') {
-        let at = offset;
-        offset += raw.len();
-        let (code, comment) = split_comment(raw, at)?;
-        let trimmed = code.trim();
-        if trimmed.is_empty() {
-            if let Some(body) = comment {
-                pending.push(body);
-            }
-            continue;
-        }
-        let indent = code.chars().take_while(|c| *c == ' ' || *c == '\t').count();
-        let start = code.len() - code.trim_start().len();
-        lines.push(Raw {
-            indent,
-            text: trimmed.to_string(),
-            at: at + start,
-            leading: std::mem::take(&mut pending),
-            trailing: comment,
-        });
-    }
-    if !pending.is_empty() {
-        lines.push(Raw {
-            indent: 0,
-            text: String::new(),
-            at: offset,
-            leading: pending,
-            trailing: None,
-        });
-    }
-    Ok(lines)
 }
 
 fn err(offset: usize, message: &str) -> Error {
@@ -620,25 +536,6 @@ fn write_phrase(out: &mut String, text: &str) {
     } else {
         out.push_str(text);
     }
-}
-
-fn quoted(out: &mut String, value: &str) {
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{0}'..='\u{1f}' => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 fn write_comments(out: &mut String, comments: &[String]) {

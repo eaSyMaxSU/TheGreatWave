@@ -1095,13 +1095,6 @@ enum Fault {
     Unavailable(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Step {
-    Unchanged,
-    Rendered,
-    StatusOnly,
-}
-
 impl DiagramState {
     fn status(&self) -> Option<&str> {
         match &self.fault {
@@ -1111,15 +1104,15 @@ impl DiagramState {
     }
 
     #[cfg(test)]
-    fn apply_text(&mut self, label: &str, source: &str) -> Step {
+    fn apply_text(&mut self, label: &str, source: &str) {
         let rendered = tgw::render(source);
         self.commit(label, source, rendered)
     }
 
-    fn commit(&mut self, label: &str, source: &str, rendered: Result<String, tgw::Error>) -> Step {
+    fn commit(&mut self, label: &str, source: &str, rendered: Result<String, tgw::Error>) {
         let same_source = self.source.as_deref() == Some(source);
         if same_source && !matches!(self.fault, Some(Fault::Unavailable(_))) {
-            return Step::Unchanged;
+            return;
         }
         match rendered {
             Ok(svg) => {
@@ -1127,26 +1120,23 @@ impl DiagramState {
                 self.source = Some(source.to_string());
                 self.fault = None;
                 if same_svg {
-                    return Step::StatusOnly;
+                    return;
                 }
                 self.svg = Some(Arc::from(svg));
                 self.generation += 1;
-                Step::Rendered
             }
             Err(error) => {
                 self.source = Some(source.to_string());
                 self.fault = Some(Fault::Parse(diagnostic(label, source, &error)));
-                Step::StatusOnly
             }
         }
     }
 
-    fn mark_unavailable(&mut self, message: String) -> Step {
+    fn mark_unavailable(&mut self, message: String) {
         if matches!(&self.fault, Some(Fault::Unavailable(current)) if current == &message) {
-            return Step::Unchanged;
+            return;
         }
         self.fault = Some(Fault::Unavailable(message));
-        Step::StatusOnly
     }
 }
 
@@ -1185,16 +1175,16 @@ mod tests {
     fn valid_source_replaces_svg_and_identical_bytes_keep_generation() {
         let mut state = DiagramState::default();
         let source = "clk: p...\n";
-        assert_eq!(state.apply_text("a.tgw", source), Step::Rendered);
+        state.apply_text("a.tgw", source);
         let generation = state.generation;
         let svg = state.svg.clone();
         assert!(svg.as_deref().unwrap().contains("<svg"));
         assert!(state.status().is_none());
-        assert_eq!(state.apply_text("a.tgw", source), Step::Unchanged);
+        state.apply_text("a.tgw", source);
         assert_eq!(state.generation, generation);
         assert_eq!(state.svg, svg);
 
-        assert_eq!(state.apply_text("a.tgw", "clk: n...\n"), Step::Rendered);
+        state.apply_text("a.tgw", "clk: n...\n");
         assert!(state.generation > generation);
         assert_ne!(state.svg, svg);
     }
@@ -1206,7 +1196,7 @@ mod tests {
         let svg = state.svg.clone();
         let generation = state.generation;
         let bad = "clk: p?\n";
-        assert_eq!(state.apply_text("a.tgw", bad), Step::StatusOnly);
+        state.apply_text("a.tgw", bad);
         assert_eq!(state.svg, svg);
         assert_eq!(state.generation, generation);
         assert_eq!(
@@ -1215,7 +1205,9 @@ mod tests {
                 "a.tgw:1:7: unknown wave symbol '?'; expected p n P N h l H L 0 1 x d u z = 2-9 . | < >"
             )
         );
-        assert_eq!(state.apply_text("a.tgw", bad), Step::Unchanged);
+        let status = state.status().unwrap().to_string();
+        state.apply_text("a.tgw", bad);
+        assert_eq!(state.status(), Some(status.as_str()));
         assert_eq!(state.generation, generation);
         assert_eq!(state.svg, svg);
     }
@@ -1226,19 +1218,14 @@ mod tests {
         state.apply_text("a.tgw", "clk: p...\n");
         let svg = state.svg.clone();
         let generation = state.generation;
-        assert_eq!(
-            state.mark_unavailable("a.tgw: file is missing".into()),
-            Step::StatusOnly
-        );
+        state.mark_unavailable("a.tgw: file is missing".into());
         assert_eq!(state.svg, svg);
         assert_eq!(state.generation, generation);
         assert_eq!(state.status(), Some("a.tgw: file is missing"));
-        assert_eq!(
-            state.mark_unavailable("a.tgw: file is missing".into()),
-            Step::Unchanged
-        );
+        state.mark_unavailable("a.tgw: file is missing".into());
+        assert_eq!(state.status(), Some("a.tgw: file is missing"));
         assert_eq!(state.generation, generation);
-        assert_eq!(state.apply_text("a.tgw", "clk: p...\n"), Step::StatusOnly);
+        state.apply_text("a.tgw", "clk: p...\n");
         assert!(state.status().is_none());
         assert_eq!(state.generation, generation);
         assert_eq!(state.svg, svg);
@@ -1247,7 +1234,7 @@ mod tests {
         let svg = state.svg.clone();
         let generation = state.generation;
         state.mark_unavailable("a.tgw: file is missing".into());
-        assert_eq!(state.apply_text("a.tgw", "clk: p?\n"), Step::StatusOnly);
+        state.apply_text("a.tgw", "clk: p?\n");
         assert_eq!(
             state.status(),
             Some(

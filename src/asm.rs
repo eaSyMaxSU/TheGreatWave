@@ -5,7 +5,8 @@
 //! leaves to the right. The text is the layout; nothing in the file is a
 //! coordinate.
 
-use crate::native::{split_comment, text, tokens};
+use crate::format::quoted;
+use crate::native::{raw_lines, split_comment, text, tokens, Raw};
 use crate::scan::Remark;
 use crate::Error;
 use std::collections::HashMap;
@@ -83,14 +84,6 @@ pub(crate) struct Branch {
 pub(crate) enum Next {
     Link(Link),
     Decision(Box<Decision>),
-}
-
-struct Raw {
-    indent: usize,
-    text: String,
-    at: usize,
-    leading: Vec<String>,
-    trailing: Option<String>,
 }
 
 pub(crate) fn starts_with_asm(source: &str) -> bool {
@@ -238,50 +231,6 @@ pub(crate) fn parse(source: &str) -> Result<Chart, Error> {
     }
     resolve_links(&chart)?;
     Ok(chart)
-}
-
-fn raw_lines(source: &str) -> Result<Vec<Raw>, Error> {
-    let mut lines = Vec::new();
-    let mut pending = Vec::new();
-    let mut offset = 0;
-    for raw in source.split_inclusive('\n') {
-        let at = offset;
-        offset += raw.len();
-        let (code, comment) = split_comment(raw, at)?;
-        let trimmed = code.trim();
-        if trimmed.is_empty() {
-            if let Some(body) = comment {
-                pending.push(body);
-            }
-            continue;
-        }
-        let indent = code.chars().take_while(|c| *c == ' ' || *c == '\t').count();
-        let start = code.len() - code.trim_start().len();
-        lines.push(Raw {
-            indent,
-            text: trimmed.to_string(),
-            at: at + start,
-            leading: std::mem::take(&mut pending),
-            trailing: comment,
-        });
-    }
-    if !pending.is_empty() {
-        lines.push(Raw {
-            indent: 0,
-            text: String::new(),
-            at: offset,
-            leading: pending,
-            trailing: None,
-        });
-    }
-    if let Some(last) = lines.last() {
-        if last.text.is_empty() {
-            // Kept so the caller can read end comments. parse() skips it
-            // because the main loop stops on real lines; drop it from the
-            // directive scan by handling it in parse via notes.
-        }
-    }
-    Ok(lines)
 }
 
 fn parse_body(lines: &[Raw], index: &mut usize, parent: usize) -> Result<(Vec<Line>, Exit), Error> {
@@ -930,25 +879,6 @@ fn write_paren(out: &mut String, text: &str) {
         out.push_str(text);
     }
     out.push(')');
-}
-
-fn quoted(out: &mut String, value: &str) {
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{0}'..='\u{1f}' => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 fn write_comments(out: &mut String, depth: usize, comments: &[String]) {

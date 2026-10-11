@@ -418,6 +418,53 @@ fn tick(s: &str, at: usize) -> Result<Tick, Error> {
     })
 }
 
+pub(crate) struct Raw {
+    pub indent: usize,
+    pub text: String,
+    pub at: usize,
+    pub leading: Vec<String>,
+    pub trailing: Option<String>,
+}
+
+/// Collect chart lines, attaching comments to the next construct. A final
+/// empty line carries comments that have no following construct.
+pub(crate) fn raw_lines(source: &str) -> Result<Vec<Raw>, Error> {
+    let mut lines = Vec::new();
+    let mut pending = Vec::new();
+    let mut offset = 0;
+    for raw in source.split_inclusive('\n') {
+        let at = offset;
+        offset += raw.len();
+        let (code, comment) = split_comment(raw, at)?;
+        let trimmed = code.trim();
+        if trimmed.is_empty() {
+            if let Some(body) = comment {
+                pending.push(body);
+            }
+            continue;
+        }
+        let indent = code.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+        let start = code.len() - code.trim_start().len();
+        lines.push(Raw {
+            indent,
+            text: trimmed.to_string(),
+            at: at + start,
+            leading: std::mem::take(&mut pending),
+            trailing: comment,
+        });
+    }
+    if !pending.is_empty() {
+        lines.push(Raw {
+            indent: 0,
+            text: String::new(),
+            at: offset,
+            leading: pending,
+            trailing: None,
+        });
+    }
+    Ok(lines)
+}
+
 // All separators/comments are recognized outside quoted strings only.
 pub(crate) fn split_comment(s: &str, at: usize) -> Result<(&str, Option<String>), Error> {
     let hash = if !s.contains('\'') && !s.contains('"') {
@@ -524,6 +571,8 @@ pub(crate) fn text(s: &str, at: usize) -> Result<String, Error> {
         Ok(s.to_string())
     }
 }
+/// Unquoted tokens are borrowed; quoted tokens are owned, even without escapes.
+/// HLS and GTL use this distinction to keep quoted integers as names.
 pub(crate) fn tokens(s: &str, at: usize) -> Result<Vec<Cow<'_, str>>, Error> {
     let mut result = Vec::new();
     let mut i = 0;

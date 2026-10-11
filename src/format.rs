@@ -132,7 +132,7 @@ fn indentation(out: &mut String, depth: usize) {
     }
 }
 
-fn quoted(out: &mut String, value: &str) {
+pub(crate) fn quoted(out: &mut String, value: &str) {
     out.push('"');
     for c in value.chars() {
         match c {

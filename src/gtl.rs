@@ -3,9 +3,11 @@
 //! Each gate is `kind inputs -> outputs`. The kind reports how many ports are
 //! legal. The lists are what a later kind with more ports will fill in.
 
-use crate::native::{split_comment, tokens};
+use crate::format::quoted;
+use crate::native::{raw_lines, split_comment, tokens, Raw};
 use crate::scan::Remark;
 use crate::Error;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 const MAX_GATES: usize = 256;
@@ -118,13 +120,6 @@ pub(crate) struct Notes {
     pub title: Remark,
     pub footer: Remark,
     pub end: Vec<String>,
-}
-
-struct Raw {
-    text: String,
-    at: usize,
-    leading: Vec<String>,
-    trailing: Option<String>,
 }
 
 pub(crate) fn starts_with_gtl(source: &str) -> bool {
@@ -248,7 +243,6 @@ fn apply_directive(net: &mut Netlist, directive: &str, line: &Raw) -> Result<(),
 }
 
 fn parse_gate(line: &Raw) -> Result<Gate, Error> {
-    let quoted = quote_flags(&line.text);
     let parts = tokens(&line.text, line.at)?;
     if parts.is_empty() {
         return Err(err(
@@ -301,17 +295,15 @@ fn parse_gate(line: &Raw) -> Result<Gate, Error> {
         ));
     }
     let mut gate_inputs = Vec::with_capacity(inputs.len());
-    for (index, token) in inputs.iter().enumerate() {
-        let flag = quoted.get(index + 1).copied().unwrap_or(false);
-        gate_inputs.push(operand(token, flag));
+    for token in inputs {
+        gate_inputs.push(operand(token, matches!(token, Cow::Owned(_))));
     }
     let mut gate_outputs = Vec::with_capacity(outputs.len());
-    for (index, token) in outputs.iter().enumerate() {
-        let flag = quoted.get(arrow + 1 + index).copied().unwrap_or(false);
+    for token in outputs {
         if token.is_empty() {
             return Err(err(line.at, "result needs a name"));
         }
-        if !flag && token.as_ref() == "->" {
+        if matches!(token, Cow::Borrowed(_)) && token.as_ref() == "->" {
             return Err(err(line.at, "result needs a name"));
         }
         gate_outputs.push(token.to_string());
@@ -430,80 +422,6 @@ pub(crate) fn operand_name(operand: &Operand) -> Option<&str> {
     }
 }
 
-fn quote_flags(src: &str) -> Vec<bool> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < src.len() {
-        let c = src[i..].chars().next().unwrap();
-        if c.is_whitespace() {
-            i += c.len_utf8();
-            continue;
-        }
-        if c == '"' || c == '\'' {
-            let quote = c;
-            out.push(true);
-            i += c.len_utf8();
-            while i < src.len() {
-                let c = src[i..].chars().next().unwrap();
-                i += c.len_utf8();
-                if c == '\\' {
-                    if let Some(escaped) = src[i..].chars().next() {
-                        i += escaped.len_utf8();
-                    }
-                    continue;
-                }
-                if c == quote {
-                    break;
-                }
-            }
-        } else {
-            out.push(false);
-            while i < src.len() {
-                let c = src[i..].chars().next().unwrap();
-                if c.is_whitespace() {
-                    break;
-                }
-                i += c.len_utf8();
-            }
-        }
-    }
-    out
-}
-
-fn raw_lines(source: &str) -> Result<Vec<Raw>, Error> {
-    let mut lines = Vec::new();
-    let mut pending = Vec::new();
-    let mut offset = 0;
-    for raw in source.split_inclusive('\n') {
-        let at = offset;
-        offset += raw.len();
-        let (code, comment) = split_comment(raw, at)?;
-        let trimmed = code.trim();
-        if trimmed.is_empty() {
-            if let Some(body) = comment {
-                pending.push(body);
-            }
-            continue;
-        }
-        let start = code.len() - code.trim_start().len();
-        lines.push(Raw {
-            text: trimmed.to_string(),
-            at: at + start,
-            leading: std::mem::take(&mut pending),
-            trailing: comment,
-        });
-    }
-    if !pending.is_empty() {
-        lines.push(Raw {
-            text: String::new(),
-            at: offset,
-            leading: pending,
-            trailing: None,
-        });
-    }
-    Ok(lines)
-}
-
 fn err(offset: usize, message: &str) -> Error {
     Error {
         offset,
@@ -597,25 +515,6 @@ fn write_phrase(out: &mut String, text: &str) {
     } else {
         out.push_str(text);
     }
-}
-
-fn quoted(out: &mut String, value: &str) {
-    out.push('"');
-    for c in value.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{0}'..='\u{1f}' => {
-                use std::fmt::Write as _;
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            _ => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 fn write_comments(out: &mut String, comments: &[String]) {
