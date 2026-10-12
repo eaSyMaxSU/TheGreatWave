@@ -1,5 +1,9 @@
 #![deny(unsafe_code)]
 
+// GPUI Fast's macros resolve the GPUI API through this crate alias.
+#[cfg(feature = "view")]
+extern crate gpui_kit as gpui;
+
 use std::env;
 use std::ffi::OsString;
 use std::fs;

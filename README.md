@@ -688,7 +688,7 @@ Use the CLI when you want ready-made `path:line:column` diagnostics. Embed the l
 | `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, no GUI libraries |
 | `cargo build --release --no-default-features` | Renderer only, no dependencies |
 
-`tgw --help` says when a flag is missing from the build. The window uses [GPUI](https://www.gpui.rs/). `rust-toolchain.toml` pins the compiler.
+`tgw --help` says when a flag is missing from the build. The window uses [GPUI Fast](https://github.com/longbridge/gpui-fast) through GPUI Kit. `Cargo.toml` patches Kit's `gpui-pre-*` dependencies to a pinned fork revision whose compatibility shims match Kit 0.7.0's snapshot version (0.3.7). When upgrading Kit, update all five patches together to a fork revision with matching shim versions, then regenerate `Cargo.lock`. `rust-toolchain.toml` pins the compiler.
 
 The release workflow builds and tests all three native targets with default features and `--locked`. Run the **Release** workflow with a new tag such as `v0.1.0`, or push a `v*` tag; the tag must match the package version in `Cargo.toml`. Only after all targets pass does it publish the archives and checksums to GitHub Releases. A manual run creates its tag at the tested commit when publishing. Desktop-only viewer tests remain opt-in; the automated release tests exercise rendering and file watching, and the packager smoke-tests the copied executable outside the source tree.
 
