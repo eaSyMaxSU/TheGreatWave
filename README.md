@@ -606,6 +606,10 @@ That example reports median and p95 render times and SVG sizes for long signals.
 
 ## Library
 
+Use the Rust library for in-process SVG rendering, or the [CLI from another language or an AI agent](#use-from-other-languages-and-ai-agents). Both use the same parser, layout, and SVG writers for all four diagram types; callers supply the description, not coordinates or wire routes.
+
+The current library API renders and formats source text. **The native viewer and file watcher are CLI features, not public library APIs.** Enabling `watch` or `view` does not expose an embeddable watcher or window. Parsed models, layout geometry, and drawing primitives are private implementation details; there is no public graph-builder, Python binding, JavaScript binding, or JSON protocol.
+
 ```rust
 let svg = tgw::render("@wvf\nclk: P...\ndata: x3.4 => ready done")?;
 let mut buffer = Vec::new();
@@ -613,6 +617,14 @@ tgw::render_into("@wvf\nclk: p...", &mut buffer)?;
 let editable = tgw::to_tgw("clk: p...")?;
 # Ok::<(), tgw::Error>(())
 ```
+
+| Function | Result | Use |
+| --- | --- | --- |
+| `render(source)` | `Result<String, Error>` | One compact, light SVG. |
+| `render_into(source, out)` | `Result<(), Error>` | The same SVG in a reusable `Vec<u8>`. |
+| `render_opts(source, out, indent)` | `Result<(), Error>` | Light SVG with `u8` indentation; 0 is compact. |
+| `render_themed(source, out, indent, scheme)` | `Result<(), Error>` | SVG with a `&'static scheme::Scheme`, including `LIGHT` and `DARK`. |
+| `to_tgw(source)` | `Result<String, Error>` | Canonical source, not SVG or a translation to another diagram type. |
 
 `render`, `render_into`, and `to_tgw` accept all four pictures. `render_opts` indents the SVG. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_opts` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
@@ -631,6 +643,8 @@ tgw = { git = "https://github.com/eaSyMaxSU/TheGreatWave", default-features = fa
 
 For reproducible builds, commit your application's `Cargo.lock`; a Git dependency can also be pinned with `rev` to a chosen commit. The rendering library uses no third-party dependencies with default features disabled.
 
+Keep `default-features = false` on rendering dependencies: the package defaults include the native viewer and its platform dependencies. The repository's `rust-toolchain.toml` selects a compiler for this checkout, not for downstream applications; use a compatible Rust toolchain in your application too.
+
 This complete program reads a source file, writes an SVG, and writes a separately named canonical source file:
 
 ```rust
@@ -644,6 +658,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Render any of the four diagram types
+
+No per-diagram API or manual layout is needed. This complete example reuses one output buffer and writes four standalone SVGs:
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let diagrams = [
+        ("timing.svg", "@wvf\nclk: P...\ndata: x3.x => payload\n"),
+        ("controller.svg", "@asm\nidle:\n  ? start\n    0 idle\n    1 done\ndone:\n  valid=1\n"),
+        ("schedule.svg", "@hls\n0:\n  + a b -> sum\n1:\n  * sum c -> result\n"),
+        ("gates.svg", "@gtl\nand enable valid -> select\nmux select a b -> y\n"),
+    ];
+    let mut svg = Vec::new();
+    for (path, source) in diagrams {
+        tgw::render_into(source, &mut svg)?;
+        std::fs::write(path, &svg)?;
+    }
+    Ok(())
+}
+```
+
+Display the output with `<img src="timing.svg" alt="Clock and payload timing">`, or open it directly in a browser. Preserve the `viewBox` when resizing SVGs. Text remains text and uses the reader's available fonts, so check the target font environment when exact typography matters.
 
 ### Reuse a buffer and choose a palette
 
@@ -679,6 +716,49 @@ fn main() {
 ```
 
 Use the CLI when you want ready-made `path:line:column` diagnostics. Embed the library when your application needs the SVG string, custom diagnostics, or direct control over the output buffer and palette.
+
+### Use from other languages and AI agents
+
+The portable integration is a subprocess: send UTF-8 `.tgw` text on stdin and read SVG from stdout. Pass arguments as an array rather than interpolating generated text into a shell command. For example, with `tgw` on `PATH`:
+
+```python
+import subprocess
+
+source = "@gtl\nand enable valid -> select\nmux select a b -> y\n"
+result = subprocess.run(
+    ["tgw", "-"],
+    input=source,
+    text=True,
+    encoding="utf-8",
+    capture_output=True,
+    timeout=10,
+    check=False,
+)
+if result.returncode != 0:
+    raise RuntimeError(result.stderr.strip())
+svg = result.stdout
+```
+
+For agent tool calls:
+
+1. Choose `@wvf`, `@asm`, `@hls`, or `@gtl` and generate only that diagram's source. Use the language sections above for syntax and limits; do not invent layout directives.
+2. Render once. Treat exit status 1 as a failed render, and use stderr to correct the source before retrying. Do not treat partial or empty stdout as a successful SVG.
+3. Optionally use `--convert` to save canonical source alongside the SVG. Conversion is not a replacement for rendering: some timing geometry is validated during rendering.
+4. For an interactive editing session, use `--watch -o PATH` or `--view` with a real source file. These are long-running processes; the host owns their lifetime.
+
+The Rust functions do no file I/O and do not start a watcher, window, or background thread. They are synchronous, so move large renders off an application's UI or async executor thread. Services accepting generated or untrusted input should impose input-size, concurrency, and execution limits; the diagram-specific caps are not a general resource budget. Use the built-in palettes unless custom paint values come from trusted application code.
+
+### Performance and maintenance
+
+Use `render_into` with a retained buffer for repeated renders, and keep indentation at 0 unless people need to read the SVG markup. Buffer reuse saves the output allocation; it does **not** cache parsing or layout. Every rendering call parses and lays out its source again, including a second call for another palette. Cache successful SVG output in the calling application when source and options have not changed.
+
+Long repeated clocks and held levels have compact output, and `@bounds` limits visible timing geometry. Cropping does not make reading and parsing the input free. Measure both runtime and SVG size with the existing benchmark:
+
+```sh
+cargo run --locked --release --no-default-features --example long_wave
+```
+
+This benchmark measures rendering, not watcher save-to-output latency or viewer frame times. When changing shared rendering code, run the renderer-only, watcher, and default-feature checks in [Checks](#checks). Preserve the same SVG behavior across CLI and library callers, and use the layout/pixel tests plus browser inspection for readability; performance measurements alone cannot detect crossed wires or clipped labels.
 
 ## Builds
 
