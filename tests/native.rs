@@ -37,6 +37,25 @@ fn indent_and_a_leading_bom() {
     tgw::render_opts(source, &mut out, 2).unwrap();
     assert!(String::from_utf8(out).unwrap().contains("two words"));
     assert!(tgw::render("\u{feff}clk: p...\n").is_ok());
+
+    for source in [
+        "@wvf\r\n波: p?\r\n",
+        "@asm\nidle:\n  > missing\n",
+        "@hls\n0:\n  + a b -> s\n  * s c -> y\n",
+        "@gtl\nnot a b -> y\n",
+        "@tick 1e308 1e308\nclk: p...\n",
+    ] {
+        let with_bom = format!("\u{feff}{source}");
+        let plain = tgw::render(source).unwrap_err();
+        let error = tgw::render(&with_bom).unwrap_err();
+        assert_eq!(error.offset, plain.offset + 3, "{source}");
+        assert_eq!(error.message, plain.message);
+        assert!(with_bom.is_char_boundary(error.offset));
+        if let Err(plain) = tgw::to_tgw(source) {
+            let error = tgw::to_tgw(&with_bom).unwrap_err();
+            assert_eq!(error.offset, plain.offset + 3, "{source}");
+        }
+    }
 }
 
 #[test]

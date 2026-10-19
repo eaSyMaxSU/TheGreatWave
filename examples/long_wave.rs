@@ -18,12 +18,27 @@ fn main() {
         "bus 10,000 values, 20 visible",
         &format!("@bounds 4990 5010\nbus: {bus}"),
     );
+    measure("ASM", include_str!("asm.tgw"));
+    measure("HLS", include_str!("hls.tgw"));
+    measure("gate netlist", include_str!("gtl.tgw"));
 }
 
 fn measure(name: &str, source: &str) {
+    let diagram = tgw::Diagram::parse(source).unwrap();
+    let expected = tgw::render(source).unwrap();
+    assert_eq!(diagram.render().unwrap(), expected);
+    sample(&format!("{name}, one-shot"), |out| {
+        tgw::render_into(black_box(source), out).unwrap();
+    });
+    sample(&format!("{name}, retained layout"), |out| {
+        diagram.render_into(out).unwrap();
+    });
+}
+
+fn sample(name: &str, mut render: impl FnMut(&mut Vec<u8>)) {
     let mut buf = Vec::new();
     for _ in 0..10 {
-        tgw::render_into(black_box(source), &mut buf).unwrap();
+        render(&mut buf);
         black_box(&buf);
     }
 
@@ -33,7 +48,7 @@ fn measure(name: &str, source: &str) {
     while samples.len() < 200 && (samples.len() < 30 || started.elapsed() < Duration::from_secs(1))
     {
         let t = Instant::now();
-        tgw::render_into(black_box(source), &mut buf).unwrap();
+        render(&mut buf);
         samples.push(t.elapsed());
         black_box(&buf);
     }

@@ -4,7 +4,7 @@
 
 use crate::draw::{self, measure, Text};
 use crate::hls::{Kind, Schedule};
-use crate::hls_layout::{self, symbol, Scene, Unit, ARROW, BADGE, BOX_H, CELL_H, EXPR_X, SPACE};
+use crate::hls_layout::{symbol, Scene, Unit, ARROW, BADGE, BOX_H, CELL_H, EXPR_X, SPACE};
 use crate::scheme::Scheme;
 use crate::Error;
 
@@ -12,11 +12,11 @@ const MARGIN: i64 = 8;
 
 pub(crate) fn write(
     schedule: &Schedule,
+    scene: &Scene,
     out: &mut Vec<u8>,
     indent: u8,
     scheme: &'static Scheme,
 ) -> Result<(), Error> {
-    let scene = hls_layout::layout(schedule);
     let cycles = schedule.cycle_count;
     let ops = schedule.ops.len();
     let desc = format!(
@@ -35,7 +35,7 @@ pub(crate) fn write(
         &desc,
         scheme,
     );
-    paint(&scene, out, scheme);
+    paint(scene, out, scheme);
     draw::finish(out, indent);
     Ok(())
 }

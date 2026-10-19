@@ -280,6 +280,43 @@ fn buffer_is_reused() {
 }
 
 #[test]
+fn retained_diagrams_share_layout_without_sharing_output_or_palette() {
+    for name in ["transfer", "asm", "hls", "gtl"] {
+        let source = fs::read_to_string(root().join(format!("examples/{name}.tgw"))).unwrap();
+        let diagram = tgw::Diagram::parse(&source).unwrap();
+        let expected = fs::read_to_string(root().join(format!("examples/{name}.svg"))).unwrap();
+        let expected = expected.trim_end().as_bytes();
+        // Prepare in dark first: a cache must not bake that palette into layout.
+        let mut dark = Vec::new();
+        diagram
+            .render_themed(&mut dark, 0, &tgw::scheme::DARK)
+            .unwrap();
+        assert!(String::from_utf8_lossy(&dark).contains("fill=\"#10151f\""));
+        assert_ne!(dark, expected);
+        std::thread::scope(|scope| {
+            let light = scope.spawn(|| diagram.render().unwrap());
+            let themed = scope.spawn(|| {
+                let mut out = b"old output".to_vec();
+                diagram
+                    .render_themed(&mut out, 0, &tgw::scheme::DARK)
+                    .unwrap();
+                out
+            });
+            assert_eq!(light.join().unwrap().as_bytes(), expected, "{name}");
+            assert_eq!(themed.join().unwrap(), dark, "{name}");
+        });
+        assert_eq!(tgw::render(&diagram.to_tgw()).unwrap().as_bytes(), expected);
+    }
+    let diagram = tgw::Diagram::parse("\u{feff}@tick 1e308 1e308\nclk: p...\n").unwrap();
+    for _ in 0..2 {
+        let mut out = b"old output".to_vec();
+        let error = diagram.render_into(&mut out).unwrap_err();
+        assert_eq!(error.offset, 3);
+        assert!(out.is_empty());
+    }
+}
+
+#[test]
 fn path_lane_renders() {
     let src = "pw: path M0,0 L1,1\n";
     let svg = tgw::render(src).unwrap();

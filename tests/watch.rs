@@ -199,6 +199,89 @@ fn watch_follows_every_edge_case_picture() {
     follow_edge_cases("watch-edges", "--watch");
 }
 
+#[test]
+fn library_watcher_retains_snapshots_recovers_exports_and_stops() {
+    use tgw::live::{Job, Loaded, Watcher};
+
+    let dir = scratch("library");
+    let input = dir.join("diagram.tgw");
+    let output = dir.join("diagram.svg");
+    let first = "@gtl\nnot a -> y\n";
+    fs::write(&input, first).unwrap();
+    let mut watcher = Watcher::new(Job::new(input.clone(), Some(output.clone()), 2).unwrap());
+    let Some(Loaded::Text {
+        rendered: Ok(saved),
+        written: Some(Ok(true)),
+        ..
+    }) = watcher.next_update(Duration::ZERO)
+    else {
+        panic!("initial load should render and export");
+    };
+    assert_eq!(&*saved.source, first);
+    assert_eq!(fs::read(&output).unwrap(), one_off(&dir, first));
+
+    // An error references the original BOM-prefixed text, not a normalized copy.
+    fs::write(&input, "\u{feff}@gtl\nnot a b -> y\n").unwrap();
+    let Some(Loaded::Text {
+        rendered: Err(error),
+        written: None,
+        ..
+    }) = watcher.next_update(PATIENCE)
+    else {
+        panic!("invalid source must not replace the output");
+    };
+    assert_eq!(error.offset, 8);
+    assert_eq!(fs::read(&output).unwrap(), one_off(&dir, first));
+    let mut dark = Vec::new();
+    saved
+        .diagram
+        .render_themed(&mut dark, 0, &tgw::scheme::DARK)
+        .unwrap();
+    assert!(String::from_utf8_lossy(&dark).contains("fill=\"#10151f\""));
+    assert_eq!(saved.diagram.render().unwrap(), &*saved.svg);
+
+    fs::remove_file(&input).unwrap();
+    assert!(matches!(
+        watcher.next_update(PATIENCE),
+        Some(Loaded::Unreadable(_))
+    ));
+    let second = "@hls\n0:\n  + a b -> sum\n";
+    save_by_rename(&input, second);
+    // Simulate an export failure after Job::new's path validation.
+    fs::remove_file(&output).unwrap();
+    fs::create_dir(&output).unwrap();
+    assert!(matches!(
+        watcher.next_update(PATIENCE),
+        Some(Loaded::Text {
+            rendered: Ok(_),
+            written: Some(Err(_)),
+            ..
+        })
+    ));
+    fs::remove_dir(&output).unwrap();
+    assert!(matches!(
+        watcher.next_update(PATIENCE),
+        Some(Loaded::Text {
+            rendered: Ok(_),
+            written: Some(Ok(true)),
+            ..
+        })
+    ));
+    let expected = one_off(&dir, second);
+    assert_eq!(fs::read(&output).unwrap(), expected);
+
+    // Drain any coalesced notifications, then observe an idle timeout.
+    let deadline = Instant::now() + PATIENCE;
+    while watcher.next_update(Duration::from_millis(250)).is_some() {
+        assert!(Instant::now() < deadline, "watcher never becomes idle");
+    }
+    drop(watcher);
+    fs::write(&input, first).unwrap();
+    thread::sleep(QUIET);
+    assert_eq!(fs::read(&output).unwrap(), expected);
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[cfg(feature = "view")]
 #[test]
 #[ignore = "opens a window; run with --ignored where a display is available"]

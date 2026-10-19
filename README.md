@@ -608,7 +608,7 @@ That example reports median and p95 render times and SVG sizes for long signals.
 
 Use the Rust library for in-process SVG rendering, or the [CLI from another language or an AI agent](#use-from-other-languages-and-ai-agents). Both use the same parser, layout, and SVG writers for all four diagram types; callers supply the description, not coordinates or wire routes.
 
-The current library API renders and formats source text. **The native viewer and file watcher are CLI features, not public library APIs.** Enabling `watch` or `view` does not expose an embeddable watcher or window. Parsed models, layout geometry, and drawing primitives are private implementation details; there is no public graph-builder, Python binding, JavaScript binding, or JSON protocol.
+The library provides one-shot rendering, a reusable `Diagram`, an optional `live::Watcher`, and an optional native `view::run` entry point. The CLI uses these same implementations. Parsed models, layout geometry, and drawing primitives stay private so applications do not depend on routing internals. There is no public graph-builder, Python binding, JavaScript binding, or JSON protocol.
 
 ```rust
 let svg = tgw::render("@wvf\nclk: P...\ndata: x3.4 => ready done")?;
@@ -625,6 +625,7 @@ let editable = tgw::to_tgw("clk: p...")?;
 | `render_opts(source, out, indent)` | `Result<(), Error>` | Light SVG with `u8` indentation; 0 is compact. |
 | `render_themed(source, out, indent, scheme)` | `Result<(), Error>` | SVG with a `&'static scheme::Scheme`, including `LIGHT` and `DARK`. |
 | `to_tgw(source)` | `Result<String, Error>` | Canonical source, not SVG or a translation to another diagram type. |
+| `Diagram::parse(source)` | `Result<Diagram, Error>` | Owned parsed source with lazily cached layout for repeated rendering. |
 
 `render`, `render_into`, and `to_tgw` accept all four pictures. `render_opts` indents the SVG. `render_themed` takes `scheme::LIGHT` or `scheme::DARK`. `render` and `render_opts` always write `scheme::LIGHT`, which is also the palette of a saved file. On error the output buffer is cleared. Invalid paths, excessive nesting, non-finite timing, and out-of-range geometry return `Error` with a byte offset and a message.
 
@@ -701,6 +702,80 @@ fn main() -> Result<(), tgw::Error> {
 
 The CLI saves light SVGs even when the viewer is dark. Use `render_themed` in an application when you need a dark SVG export.
 
+### Parse once and reuse layout
+
+Retain a `Diagram` when rendering the same source repeatedly or in several palettes. The first render computes layout; subsequent renders reuse it. Each call still writes a fresh SVG into the caller's buffer. The diagram owns its data, can be shared across threads with `Arc<Diagram>`, and does not retain the caller's output buffer.
+
+```rust
+fn main() -> Result<(), tgw::Error> {
+    let diagram = tgw::Diagram::parse("@gtl\nxor a b -> result\n")?;
+    let mut svg = Vec::new();
+    diagram.render_into(&mut svg)?;
+    diagram.render_themed(&mut svg, 0, &tgw::scheme::DARK)?;
+    diagram.render_opts(&mut svg, 2)?; // Reuse layout for an indented light SVG.
+    let canonical = diagram.to_tgw();
+    assert!(canonical.starts_with("@gtl"));
+    Ok(())
+}
+```
+
+Create a new `Diagram` when source changes. Parsing does not validate every timing geometry constraint; check the render result too. Both parse and render errors use byte offsets into the original source, including a leading UTF-8 BOM. A failed render clears the output buffer.
+
+### Watch from a Rust application
+
+Enable the watcher without GUI dependencies:
+
+```toml
+[dependencies]
+tgw = { git = "https://github.com/eaSyMaxSU/TheGreatWave", default-features = false, features = ["watch"] }
+```
+
+`Job::new(input, output, indent)` validates paths and prevents exporting over the input. Use `None` for the output to receive SVGs without writing a file. `Watcher::next_update(timeout)` returns the initial load immediately, then waits for changes. It follows rename saves, falls back to polling, and retries failed exports. Unchanged source reuses its parsed diagram and SVG; indentation formats that SVG instead of rendering again.
+
+This example exits after 30 seconds without an update. A host can instead loop with a shorter timeout and check its own cancellation flag between calls:
+
+```rust
+use std::time::Duration;
+use tgw::live::{Job, Loaded, Watcher};
+
+fn main() -> Result<(), String> {
+    let job = Job::new("handshake.tgw".into(), Some("handshake.svg".into()), 2)?;
+    let mut watcher = Watcher::new(job);
+    while let Some(update) = watcher.next_update(Duration::from_secs(30)) {
+        match update {
+            Loaded::Text { rendered: Ok(snapshot), written, .. } => {
+                println!("{} SVG bytes", snapshot.svg.len());
+                // Retain this Arc<Snapshot> if your UI needs the last good picture.
+                if let Some(Err(error)) = written {
+                    eprintln!("{error}");
+                }
+            }
+            Loaded::Text { rendered: Err(error), .. } => eprintln!("{error}"),
+            Loaded::Unreadable(error) => eprintln!("{error}"),
+        }
+    }
+    drop(watcher); // Releases the OS watch and joins its notification thread.
+    Ok(())
+}
+```
+
+A successful `Snapshot` contains `source`, compact light `svg`, and the reusable `diagram`. Invalid or missing input does not overwrite the exported file. The application owns the last good snapshot and decides how to display errors. `written` separately reports export success, no change, or an I/O error. The watcher API does not log or terminate the process.
+
+Calls are blocking: the timeout bounds waiting for an update, not reading a file that is still being saved, rendering, or exporting it. Use a worker thread in GUI and async applications. Dropping the watcher stops notifications; no detached watch thread remains alive.
+
+### Open the native viewer from Rust
+
+Enable `features = ["view"]` on the dependency (`view` includes `watch`) and install the [platform dependencies](#platforms). **Also copy the complete `[patch.crates-io]` block from this revision's [Cargo.toml](Cargo.toml) into your application's workspace-root manifest.** Cargo does not inherit dependency patches; these five pinned GPUI Fast patches are required for the viewer. Renderer-only and watcher-only applications do not need them.
+
+```rust
+fn main() -> Result<(), String> {
+    let job = tgw::live::Job::new("handshake.tgw".into(), None, 0)?;
+    tgw::view::run(job)
+}
+```
+
+Call `view::run` once on the main thread. It owns the native application event loop; it is not a widget for an already-running GUI application. It returns launch errors instead of calling `process::exit`. The window retains the last good diagram through invalid edits and reuses its layout when switching palettes. To export alongside viewing, pass an output path to `Job::new`. For a custom UI, use `Diagram` or `live::Watcher` and display their SVG output yourself.
+
 ### Handle diagnostics
 
 Library errors expose `offset` (a byte offset into the input, not a character index) and `message`. This matters for UTF-8 names: do not treat a byte offset as a column number without accounting for the preceding text.
@@ -746,11 +821,11 @@ For agent tool calls:
 3. Optionally use `--convert` to save canonical source alongside the SVG. Conversion is not a replacement for rendering: some timing geometry is validated during rendering.
 4. For an interactive editing session, use `--watch -o PATH` or `--view` with a real source file. These are long-running processes; the host owns their lifetime.
 
-The Rust functions do no file I/O and do not start a watcher, window, or background thread. They are synchronous, so move large renders off an application's UI or async executor thread. Services accepting generated or untrusted input should impose input-size, concurrency, and execution limits; the diagram-specific caps are not a general resource budget. Use the built-in palettes unless custom paint values come from trusted application code.
+Rendering and formatting APIs do no file I/O and do not start a watcher, window, or background thread. They are synchronous, so move large renders off an application's UI or async executor thread. Services accepting generated or untrusted input should impose input-size, concurrency, and execution limits; the diagram-specific caps are not a general resource budget. Use the built-in palettes unless custom paint values come from trusted application code.
 
 ### Performance and maintenance
 
-Use `render_into` with a retained buffer for repeated renders, and keep indentation at 0 unless people need to read the SVG markup. Buffer reuse saves the output allocation; it does **not** cache parsing or layout. Every rendering call parses and lays out its source again, including a second call for another palette. Cache successful SVG output in the calling application when source and options have not changed.
+Use `Diagram` to reuse parsing and layout, retain the output buffer to reuse its allocation, and keep indentation at 0 unless people need to read the SVG markup. The source-taking convenience functions still parse and lay out each call. Retaining a diagram uses memory for its model and layout until it is dropped; cache final SVG bytes instead when no further renders are needed.
 
 Long repeated clocks and held levels have compact output, and `@bounds` limits visible timing geometry. Cropping does not make reading and parsing the input free. Measure both runtime and SVG size with the existing benchmark:
 
@@ -758,7 +833,7 @@ Long repeated clocks and held levels have compact output, and `@bounds` limits v
 cargo run --locked --release --no-default-features --example long_wave
 ```
 
-This benchmark measures rendering, not watcher save-to-output latency or viewer frame times. When changing shared rendering code, run the renderer-only, watcher, and default-feature checks in [Checks](#checks). Preserve the same SVG behavior across CLI and library callers, and use the layout/pixel tests plus browser inspection for readability; performance measurements alone cannot detect crossed wires or clipped labels.
+This benchmark compares one-shot rendering with warmed retained layouts for timing, ASM, HLS, and gate diagrams. It does not measure watcher save-to-output latency or viewer frame times. When changing shared rendering code, run the renderer-only, watcher, and default-feature checks in [Checks](#checks). Preserve the same SVG behavior across CLI and library callers, and use the layout/pixel tests plus browser inspection for readability; performance measurements alone cannot detect crossed wires or clipped labels.
 
 ## Builds
 
@@ -832,7 +907,9 @@ cargo doc --locked --no-deps
 cargo build --locked --release
 ```
 
-The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. The default `cargo test --locked` and the release run include the 1:1 screenshot checks for ASM charts, HLS schedules, and gate netlists.
+On headless Linux with Xvfb and a Vulkan software driver installed, run the native-window tests with `xvfb-run -a cargo test --locked --test watch -- --ignored --test-threads=1`. Orb setup installs the required virtual-display tools.
+
+The three Clippy lines, and the matching tests, are the default build, the headless watcher, and the renderer alone. The renderer is also tested in release. The default `cargo test --locked` includes the 1:1 screenshot checks for ASM charts, HLS schedules, and gate netlists.
 
 `tests/fixtures` holds diagrams and their SVG snapshots. The original eight timing diagrams must render the same picture under CRLF. Further snapshots cover the wave alphabet, fractional ticks, period and phase, markup, Unicode, a cropped bus, SVG paths, an empty diagram, and nested groups. `tests/fixtures/asm/`, `tests/fixtures/hls/`, and `tests/fixtures/gtl/` hold one edge case per file, plus `tests/fixtures/asm.tgw`, `tests/fixtures/hls.tgw`, and `tests/fixtures/gtl.tgw`. `tests/watch.rs` drives the real binary through in-place saves, a broken save, deletion, and a rename, then through every edge-case picture, including the chart, the schedule, and the netlist, for `--watch` and, when ignored tests run, for `--view`. The window tests also slice and raster those pictures the way the viewer does.
 

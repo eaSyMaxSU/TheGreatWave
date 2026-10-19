@@ -4,7 +4,7 @@
 
 use crate::draw::{self, Text};
 use crate::gtl::{Kind, Netlist};
-use crate::gtl_layout::{self, Pill, Role, Scene, Symbol, BUBBLE, PILL_H};
+use crate::gtl_layout::{Pill, Role, Scene, Symbol, BUBBLE, PILL_H};
 use crate::scheme::Scheme;
 use crate::w::push_i64;
 use crate::Error;
@@ -13,11 +13,11 @@ const MARGIN: i64 = 8;
 
 pub(crate) fn write(
     net: &Netlist,
+    scene: &Scene,
     out: &mut Vec<u8>,
     indent: u8,
     scheme: &'static Scheme,
 ) -> Result<(), Error> {
-    let scene = gtl_layout::layout(net);
     let gates = net.gates.len();
     let desc = format!("{gates} {}", if gates == 1 { "gate" } else { "gates" });
     draw::begin(
@@ -31,7 +31,7 @@ pub(crate) fn write(
         &desc,
         scheme,
     );
-    paint(&scene, out, scheme);
+    paint(scene, out, scheme);
     draw::finish(out, indent);
     Ok(())
 }

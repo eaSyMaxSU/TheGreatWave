@@ -1,7 +1,7 @@
-//! Live window for one `.tgw` file.
+//! Native live viewer, available with the `view` feature.
+//! [`run`] owns the application event loop; call it once, on the main thread.
 
 use std::future::{poll_fn, Future};
-use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::task::{Poll, Waker};
 use std::thread;
@@ -13,7 +13,9 @@ use gpui_kit::{
     Styled, SvgSize, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
-use crate::live::{self, lock, Fresh, Gate, Job, Loaded, SourceStamp, StampPoller, SOURCE_POLL};
+use crate::live::{
+    self, lock, Fresh, Gate, Job, Loaded, Snapshot, SourceStamp, StampPoller, Watch, SOURCE_POLL,
+};
 use tgw::scheme::{self, Scheme};
 
 use crate::layout::{
@@ -28,16 +30,21 @@ const MAX_DEVICE_PX: f32 = 8192.0;
 /// Wayland and X11 match windows to `tgw.desktop` by this id.
 const APP_ID: &str = "tgw";
 
-/// Opens the window and returns when it closes.
-pub(crate) fn run(job: Job) -> Result<(), String> {
+/// Open the native window and return when the application event loop ends.
+/// Call once on the main thread, not inside another GUI event loop. Source
+/// errors keep the last good picture; launch errors are returned to the caller.
+pub fn run(job: Job) -> Result<(), String> {
     display_available()?;
+    let failure = Arc::new(Mutex::new(None));
+    let failed = Arc::clone(&failure);
     gpui_kit::application().run(move |cx| {
         if let Err(error) = launch(job, cx) {
-            let _ = writeln!(io::stderr().lock(), "tgw: {error}");
-            std::process::exit(1);
+            *lock(&failed) = Some(error);
+            cx.quit();
         }
     });
-    Ok(())
+    let result = lock(&failure).take().map_or(Ok(()), Err);
+    result
 }
 
 /// Without a display server GPUI falls back to a headless platform whose
@@ -157,7 +164,7 @@ struct Viewer {
     output_fault: Option<String>,
     epoch: u64,
     loading: bool,
-    watching: bool,
+    watch: Option<Watch>,
     observed: Option<SourceStamp>,
     focus_handle: FocusHandle,
     scroll_x: f32,
@@ -193,7 +200,7 @@ impl Viewer {
             output_fault: None,
             epoch: 0,
             loading: false,
-            watching: false,
+            watch: None,
             observed: None,
             focus_handle,
             scroll_x: 0.0,
@@ -269,13 +276,14 @@ impl Viewer {
     }
 
     fn attach_watch(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.watching {
+        if self.watch.is_some() {
             return true;
         }
-        let Ok(gate) = live::watch(&self.job.input) else {
+        let Ok(watch) = live::watch(&self.job.input) else {
             return false;
         };
-        self.watching = true;
+        let gate = Arc::clone(&watch.gate);
+        self.watch = Some(watch);
         self.follow(gate, cx);
         true
     }
@@ -289,7 +297,7 @@ impl Viewer {
                 let stamp = poller.as_ref().and_then(StampPoller::latest);
                 let gone = this
                     .update(cx, |view, cx| {
-                        if !view.watching {
+                        if view.watch.is_none() {
                             let _ = view.attach_watch(cx);
                         }
                         let changed = stamp.is_some_and(|stamp| stamp != view.observed);
@@ -310,6 +318,7 @@ impl Viewer {
     fn follow(&mut self, gate: Arc<Gate>, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| loop {
             if !poll_fn(|task| gate.poll_wait(task)).await {
+                this.update(cx, |view, _| view.watch = None).ok();
                 break;
             }
             if this.update(cx, |view, cx| view.request_reload(cx)).is_err() {
@@ -346,10 +355,10 @@ impl Viewer {
             }
             Loaded::Text {
                 source,
-                svg,
+                rendered,
                 written,
             } => {
-                self.state.commit(&self.job.label, &source, svg);
+                self.state.commit(&self.job.label, &source, rendered);
                 self.output_fault = written.and_then(Result::err);
             }
         };
@@ -534,13 +543,12 @@ impl Viewer {
         let cached = self.themed.as_ref().filter(|themed| {
             themed.generation == self.state.generation && themed.scheme == self.scheme.name
         });
-        let (svg, theme_source) = if self.scheme.is_light() {
+        let (svg, theme_diagram) = if self.scheme.is_light() {
             (light, None)
         } else if let Some(themed) = cached {
             (Arc::clone(&themed.svg), None)
         } else {
-            let source = self.state.source.as_deref().map(Arc::<str>::from);
-            (light, source)
+            (light, self.state.diagram.clone())
         };
         Some(PaintJob {
             epoch: self.raster_epoch,
@@ -550,7 +558,7 @@ impl Viewer {
             label,
             wave,
             svg,
-            theme_source,
+            theme_diagram,
             renderer: cx.svg_renderer(),
             scheme: self.scheme,
         })
@@ -863,8 +871,8 @@ struct PaintJob {
     wave: Slice,
     /// Picture to raster. Light is the file SVG; dark is the cached themed one.
     svg: Arc<str>,
-    /// Source to render when this scheme is not cached yet. The file is not written.
-    theme_source: Option<Arc<str>>,
+    /// Last good prepared diagram, never the source of a later invalid edit.
+    theme_diagram: Option<Arc<tgw::Diagram>>,
     renderer: gpui_kit::SvgRenderer,
     scheme: &'static Scheme,
 }
@@ -950,7 +958,7 @@ fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>, Option<A
     let PaintJob {
         renderer,
         svg,
-        theme_source,
+        theme_diagram,
         label,
         wave,
         scale,
@@ -959,9 +967,9 @@ fn paint_panes(job: PaintJob) -> (Option<PaneImage>, Option<PaneImage>, Option<A
         scheme,
         ..
     } = job;
-    let themed = theme_source.and_then(|source| {
+    let themed = theme_diagram.and_then(|diagram| {
         let mut buf = Vec::new();
-        tgw::render_themed(&source, &mut buf, 0, scheme).ok()?;
+        diagram.render_themed(&mut buf, 0, scheme).ok()?;
         String::from_utf8(buf).ok().map(Arc::<str>::from)
     });
     let svg = themed.clone().unwrap_or(svg);
@@ -1086,6 +1094,7 @@ fn scheme_for(appearance: gpui_kit::WindowAppearance) -> &'static Scheme {
 struct DiagramState {
     source: Option<String>,
     svg: Option<Arc<str>>,
+    diagram: Option<Arc<tgw::Diagram>>,
     fault: Option<Fault>,
     generation: u64,
 }
@@ -1105,24 +1114,31 @@ impl DiagramState {
 
     #[cfg(test)]
     fn apply_text(&mut self, label: &str, source: &str) {
-        let rendered = tgw::render(source);
+        let rendered = tgw::Diagram::parse(source).and_then(|diagram| {
+            Ok(Arc::new(Snapshot {
+                svg: diagram.render()?.into(),
+                source: source.into(),
+                diagram: Arc::new(diagram),
+            }))
+        });
         self.commit(label, source, rendered)
     }
 
-    fn commit(&mut self, label: &str, source: &str, rendered: Result<String, tgw::Error>) {
+    fn commit(&mut self, label: &str, source: &str, rendered: Result<Arc<Snapshot>, tgw::Error>) {
         let same_source = self.source.as_deref() == Some(source);
         if same_source && !matches!(self.fault, Some(Fault::Unavailable(_))) {
             return;
         }
         match rendered {
-            Ok(svg) => {
-                let same_svg = self.svg.as_deref() == Some(svg.as_str());
+            Ok(snapshot) => {
+                let same_svg = self.svg.as_deref() == Some(&*snapshot.svg);
                 self.source = Some(source.to_string());
                 self.fault = None;
+                self.diagram = Some(Arc::clone(&snapshot.diagram));
                 if same_svg {
                     return;
                 }
-                self.svg = Some(Arc::from(svg));
+                self.svg = Some(Arc::clone(&snapshot.svg));
                 self.generation += 1;
             }
             Err(error) => {

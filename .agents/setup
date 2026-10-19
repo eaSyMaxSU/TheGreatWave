@@ -6,7 +6,7 @@
 # clippy and rustfmt). The default "view" feature pulls in gpui-kit, which on
 # Linux links against libxkbcommon-x11 and rasterizes through Vulkan; the base
 # template already ships gcc, pkg-config, and Mesa's software Vulkan drivers
-# (lavapipe), so only the xkbcommon dev packages are missing.
+# (lavapipe). Xvfb and xdotool allow native-viewer tests without a desktop.
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -16,13 +16,14 @@ step() { printf '\n=== %s (at %ss) ===\n' "$*" "$((SECONDS - started))"; }
 # Run apt-get through sudo only when not already root.
 sudo_sh() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
-# System packages needed to link the tgw test binaries against gpui-kit.
-if dpkg -s libxkbcommon-dev >/dev/null 2>&1 && dpkg -s libxkbcommon-x11-dev >/dev/null 2>&1; then
+# Link GPUI and run/inspect its opt-in native-window tests in a virtual display.
+packages=(libxkbcommon-dev libxkbcommon-x11-dev xvfb xauth xdotool)
+if dpkg -s "${packages[@]}" >/dev/null 2>&1; then
   step "system packages already present"
 else
   step "installing system packages"
   sudo_sh apt-get update -qq
-  sudo_sh apt-get install -y -qq libxkbcommon-dev libxkbcommon-x11-dev
+  sudo_sh apt-get install -y -qq "${packages[@]}"
 fi
 
 # Rustup with the pinned toolchain. The installer gets no default toolchain so

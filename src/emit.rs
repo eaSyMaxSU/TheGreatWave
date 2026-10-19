@@ -14,12 +14,21 @@ struct Ev {
     y: f64,
 }
 
-pub(crate) fn write_themed(
-    doc: &Doc,
-    out: &mut Vec<u8>,
-    indent: u8,
-    scheme: &'static Scheme,
-) -> Result<(), Error> {
+/// Theme-independent wave compilation and canvas measurements.
+pub(crate) struct Layout {
+    waves: Vec<Option<wave::WaveOut>>,
+    node_origins: Vec<Vec<f64>>,
+    node_slots_per_lane: Vec<Option<Vec<Slot>>>,
+    xmax: f64,
+    xg: f64,
+    width: f64,
+    height: i64,
+    yhead: i64,
+    yh0: i64,
+    yf0: i64,
+}
+
+pub(crate) fn layout(doc: &Doc) -> Result<Layout, Error> {
     let n = doc.lanes.len() as i64;
     let mut waves = Vec::with_capacity(doc.lanes.len());
     let mut node_origins = Vec::with_capacity(doc.lanes.len());
@@ -121,6 +130,42 @@ pub(crate) fn write_themed(
     let yhead = 12 + yh0 + yh1;
     let height = (gy + yhead + yf0 + yf1 + 12).max(24);
 
+    Ok(Layout {
+        waves,
+        node_origins,
+        node_slots_per_lane,
+        xmax,
+        xg,
+        width,
+        height,
+        yhead,
+        yh0,
+        yf0,
+    })
+}
+
+pub(crate) fn write_themed(
+    doc: &Doc,
+    layout: &Layout,
+    out: &mut Vec<u8>,
+    indent: u8,
+    scheme: &'static Scheme,
+) -> Result<(), Error> {
+    let &Layout {
+        ref waves,
+        ref node_origins,
+        ref node_slots_per_lane,
+        xmax,
+        xg,
+        width,
+        height,
+        yhead,
+        yh0,
+        yf0,
+    } = layout;
+    let n = doc.lanes.len() as i64;
+    let gy = n * YO;
+    let plot_width = xmax * XS as f64;
     let mut paint = Paint::with(scheme);
     let mut events = Vec::new();
     let grid = if doc.marks && gy > 0 {

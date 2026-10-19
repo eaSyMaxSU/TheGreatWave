@@ -1,4 +1,8 @@
-//! Keeps one diagram's rendering current while its source is edited.
+//! File watching and live rendering, available with the `watch` feature.
+//!
+//! Construct a [`Job`], then a [`Watcher`]. Call [`Watcher::next_update`] from
+//! a worker thread and drop it to stop watching. This API does not print, exit
+//! the process, or start a GUI. The CLI and native viewer use the same jobs.
 
 use std::ffi::OsString;
 use std::fs;
@@ -12,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use notify::event::EventKind;
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher as _};
 const DEBOUNCE: Duration = Duration::from_millis(80);
 const READ_PAUSE: Duration = Duration::from_millis(15);
 pub(crate) const READ_SETTLE: Duration = Duration::from_millis(100);
@@ -21,15 +25,32 @@ pub(crate) const READ_DEADLINE: Duration = Duration::from_millis(400);
 pub(crate) const SOURCE_POLL: Duration = Duration::from_millis(200);
 
 /// One watched diagram and the file its rendering is written to.
-pub(crate) struct Job {
+pub struct Job {
     pub(crate) input: PathBuf,
     pub(crate) label: String,
     pub(crate) output: Option<Output>,
     indent: u8,
+    cached: Mutex<Option<Cached>>,
+}
+
+struct Cached {
+    source: Arc<str>,
+    rendered: Result<Arc<Snapshot>, tgw::Error>,
+}
+
+/// One successful load. Its SVG and prepared diagram always describe the same
+/// source, and can be retained while a later edit is invalid or unavailable.
+pub struct Snapshot {
+    pub source: Arc<str>,
+    pub diagram: Arc<tgw::Diagram>,
+    /// Compact, light SVG. Output-file indentation does not affect this value.
+    pub svg: Arc<str>,
 }
 
 impl Job {
-    pub(crate) fn new(input: PathBuf, output: Option<PathBuf>, indent: u8) -> Result<Self, String> {
+    /// Validate paths. `output = None` watches without exporting a file.
+    /// Rejects output paths that alias the source, including hard links.
+    pub fn new(input: PathBuf, output: Option<PathBuf>, indent: u8) -> Result<Self, String> {
         match fs::metadata(&input) {
             Ok(meta) if meta.is_dir() => {
                 return Err(format!("{}: expected a diagram file", input.display()));
@@ -63,6 +84,7 @@ impl Job {
             input,
             output: output.map(Output::new),
             indent,
+            cached: Mutex::new(None),
         })
     }
 
@@ -83,36 +105,46 @@ impl Job {
     }
 
     fn render(&self, source: String, epoch: u64) -> Loaded {
-        let mut buffer = Vec::new();
-        let svg = tgw::render_into(&source, &mut buffer).and_then(|()| {
-            String::from_utf8(buffer).map_err(|_| tgw::Error {
-                offset: 0,
-                message: "svg was not utf-8".into(),
-            })
-        });
-        let written = match (&svg, &self.output) {
-            (Ok(svg), Some(output)) => Some(
-                self.file(&source, svg)
-                    .and_then(|bytes| output.write(epoch, &bytes)),
-            ),
+        let (source, rendered) = {
+            let mut cached = lock(&self.cached);
+            if !cached
+                .as_ref()
+                .is_some_and(|cached| *cached.source == source)
+            {
+                let source: Arc<str> = source.into();
+                let rendered = tgw::Diagram::parse(&source).and_then(|diagram| {
+                    let svg = diagram.render()?.into();
+                    Ok(Arc::new(Snapshot {
+                        source: Arc::clone(&source),
+                        diagram: Arc::new(diagram),
+                        svg,
+                    }))
+                });
+                *cached = Some(Cached { source, rendered });
+            }
+            let cached = cached.as_ref().unwrap();
+            (Arc::clone(&cached.source), cached.rendered.clone())
+        };
+        let written = match (&rendered, &self.output) {
+            (Ok(snapshot), Some(output)) => Some(output.write(epoch, &self.file(&snapshot.svg))),
             _ => None,
         };
         Loaded::Text {
             source,
-            svg,
+            rendered,
             written,
         }
     }
 
     /// The bytes `tgw INPUT -o OUTPUT` would write.
-    fn file(&self, source: &str, compact: &str) -> Result<Vec<u8>, String> {
-        if self.indent == 0 {
-            let mut bytes = compact.as_bytes().to_vec();
-            crate::terminate(&mut bytes);
-            return Ok(bytes);
-        }
-        crate::render_file(source, self.indent)
-            .map_err(|error| crate::diagnostic(&self.label, source, &error))
+    fn file(&self, compact: &str) -> Vec<u8> {
+        let mut bytes = if self.indent == 0 {
+            compact.as_bytes().to_vec()
+        } else {
+            crate::w::prettify(compact.as_bytes(), self.indent)
+        };
+        crate::terminate(&mut bytes);
+        bytes
     }
 }
 
@@ -122,16 +154,93 @@ pub(crate) struct Fresh {
     pub(crate) stable: bool,
 }
 
-pub(crate) enum Loaded {
+/// A file load and its optional export result. An unreadable or invalid source
+/// leaves the output file alone; retain the last good [`Snapshot`] yourself.
+pub enum Loaded {
     Text {
-        source: String,
-        /// Compact SVG for the window.
-        svg: Result<String, tgw::Error>,
-        /// `Some(true)` when the output file changed; `None` without an output
-        /// file or a picture.
+        source: Arc<str>,
+        rendered: Result<Arc<Snapshot>, tgw::Error>,
+        /// `Some(Ok(true))` when the output changed, `Some(Ok(false))` when
+        /// already current, `Some(Err(_))` on an export failure, and `None`
+        /// without an output file or a valid picture.
         written: Option<Result<bool, String>>,
     },
     Unreadable(String),
+}
+
+/// A cancellable, blocking file watcher. Drop it to release the OS watch and
+/// join its notification thread. No work is performed between calls except
+/// collecting OS notifications; polling and rendering happen on the caller.
+pub struct Watcher {
+    job: Job,
+    watch: Option<Watch>,
+    observed: Option<SourceStamp>,
+    epoch: u64,
+    pending: bool,
+    retry_at: Option<Instant>,
+}
+
+impl Watcher {
+    /// Begin watching; the first `next_update` loads the initial picture.
+    /// Falls back to file polling if OS notifications are unavailable.
+    pub fn new(job: Job) -> Self {
+        Self {
+            watch: watch(&job.input).ok(),
+            job,
+            observed: None,
+            epoch: 0,
+            pending: true,
+            retry_at: None,
+        }
+    }
+
+    /// Wait up to `timeout` for a change, or return `None`. Reading, settling
+    /// an active save, rendering, and exporting may take additional time.
+    /// Output failures retry at the polling interval, even without a new save.
+    pub fn next_update(&mut self, timeout: Duration) -> Option<Loaded> {
+        let started = Instant::now();
+        loop {
+            if self.pending {
+                self.epoch += 1;
+                let fresh = self.job.load(self.epoch);
+                self.pending = !fresh.stable;
+                if fresh.stable {
+                    self.observed = fresh.stamp;
+                }
+                self.retry_at = matches!(
+                    &fresh.loaded,
+                    Loaded::Text {
+                        written: Some(Err(_)),
+                        ..
+                    }
+                )
+                .then(|| Instant::now() + SOURCE_POLL);
+                return Some(fresh.loaded);
+            }
+            if self.watch.is_none() {
+                self.watch = watch(&self.job.input).ok();
+            }
+            let wait = timeout.saturating_sub(started.elapsed()).min(SOURCE_POLL);
+            let signal = match &self.watch {
+                Some(watch) => watch.gate.wait(wait),
+                None => {
+                    thread::sleep(wait);
+                    None
+                }
+            };
+            if signal == Some(false) {
+                self.watch = None;
+            }
+            self.pending = if let Some(retry_at) = self.retry_at {
+                Instant::now() >= retry_at
+            } else {
+                signal == Some(true) || source_stamp(&self.job.input) != self.observed
+            };
+            if !self.pending && started.elapsed() >= timeout {
+                return None;
+            }
+        }
+    }
 }
 
 pub(crate) struct Output {
@@ -205,43 +314,35 @@ fn say(message: impl std::fmt::Display) {
 /// Rewrites the output after every save and reports each change on stderr.
 /// Runs until the process is stopped.
 pub(crate) fn follow(job: Job) -> Result<(), String> {
-    let output = job.output.as_ref().ok_or("--watch needs -o PATH")?;
+    let output = job
+        .output
+        .as_ref()
+        .ok_or("--watch needs -o PATH")?
+        .label
+        .clone();
+    let label = job.label.clone();
     say(format!("tgw: watching {} (Ctrl-C to stop)", job.label));
-    let mut gate = watch(&job.input).ok();
-    let mut observed = None;
+    let mut watcher = Watcher::new(job);
     let mut reported: Option<String> = None;
-    let mut epoch = 0u64;
-    let mut pending = true;
-    let mut retry = false;
+    let mut first = true;
     loop {
-        if pending {
-            // A write that failed (read-only file, missing directory) must not
-            // spin: the save that caused it also wakes the directory watcher.
-            if retry {
-                thread::sleep(SOURCE_POLL);
-            }
-            epoch += 1;
-            let fresh = job.load(epoch);
-            retry = false;
-            let problem = match fresh.loaded {
+        if let Some(loaded) = watcher.next_update(SOURCE_POLL) {
+            let problem = match loaded {
                 Loaded::Unreadable(message) => Some(message),
                 Loaded::Text {
                     source,
-                    svg: Err(error),
+                    rendered: Err(error),
                     ..
-                } => Some(crate::diagnostic(&job.label, &source, &error)),
+                } => Some(crate::diagnostic(&label, &source, &error)),
                 Loaded::Text {
                     written: Some(Err(message)),
                     ..
-                } => {
-                    retry = true;
-                    Some(message)
-                }
+                } => Some(message),
                 Loaded::Text { written, .. } => {
                     if written == Some(Ok(true)) {
-                        say(format!("tgw: wrote {}", output.label));
-                    } else if epoch == 1 || reported.is_some() {
-                        say(format!("tgw: {} is up to date", output.label));
+                        say(format!("tgw: wrote {output}"));
+                    } else if first || reported.is_some() {
+                        say(format!("tgw: {output} is up to date"));
                     }
                     None
                 }
@@ -252,31 +353,31 @@ pub(crate) fn follow(job: Job) -> Result<(), String> {
                 }
             }
             reported = problem;
-            if !fresh.stable {
-                continue;
-            }
-            observed = fresh.stamp;
+            first = false;
         }
-        if gate.is_none() {
-            gate = watch(&job.input).ok();
+    }
+}
+
+/// The watch is owned by its consumer, not its notification thread. Dropping
+/// it closes the event channel, wakes pending consumers, and joins the worker.
+pub(crate) struct Watch {
+    pub(crate) gate: Arc<Gate>,
+    watcher: Option<RecommendedWatcher>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.watcher.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
         }
-        let signal = match &gate {
-            Some(gate) => gate.wait(SOURCE_POLL),
-            None => {
-                thread::sleep(SOURCE_POLL);
-                None
-            }
-        };
-        if signal == Some(false) {
-            gate = None;
-        }
-        pending = retry || signal == Some(true) || source_stamp(&job.input) != observed;
     }
 }
 
 /// Watches the directory rather than the file, so editors that save by
 /// replacing the file are still seen.
-pub(crate) fn watch(path: &Path) -> Result<Arc<Gate>, String> {
+pub(crate) fn watch(path: &Path) -> Result<Watch, String> {
     let parents = watch_dirs(path)?;
     let names = watch_names(path)?;
     let parents_for_events = parents.clone();
@@ -298,14 +399,15 @@ pub(crate) fn watch(path: &Path) -> Result<Arc<Gate>, String> {
             .watch(parent, RecursiveMode::NonRecursive)
             .map_err(|error| format!("{}: {error}", parent.display()))?;
     }
-    thread::Builder::new()
+    let worker = thread::Builder::new()
         .name("tgw-watch".into())
-        .spawn(move || {
-            let _watcher: RecommendedWatcher = watcher;
-            debounce(raw_rx, thread_gate);
-        })
+        .spawn(move || debounce(raw_rx, thread_gate))
         .map_err(|error| error.to_string())?;
-    Ok(gate)
+    Ok(Watch {
+        gate,
+        watcher: Some(watcher),
+        worker: Some(worker),
+    })
 }
 
 fn watch_dirs(path: &Path) -> Result<Vec<PathBuf>, String> {
@@ -730,7 +832,7 @@ mod tests {
         assert!(matches!(
             fresh.loaded,
             Loaded::Text {
-                svg: Ok(_),
+                rendered: Ok(_),
                 written: Some(Ok(true)),
                 ..
             }
@@ -747,10 +849,13 @@ mod tests {
 
         fs::write(&input, "clk: p?\n").unwrap();
         age(&input);
-        let Loaded::Text { svg, written, .. } = job.load(3).loaded else {
+        let Loaded::Text {
+            rendered, written, ..
+        } = job.load(3).loaded
+        else {
             panic!("the source is readable");
         };
-        assert!(svg.is_err());
+        assert!(rendered.is_err());
         assert!(written.is_none());
         assert_eq!(fs::read(&output).unwrap(), expected);
 

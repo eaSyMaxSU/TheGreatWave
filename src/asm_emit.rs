@@ -3,7 +3,7 @@
 //! with a dot wherever paths into one state merge.
 
 use crate::asm::Chart;
-use crate::asm_layout::{self, Digit, Kind, Node, Seg, HEADER};
+use crate::asm_layout::{Digit, Kind, Node, Scene, Seg, HEADER};
 use crate::draw::{self, Text};
 use crate::scheme::Scheme;
 use crate::Error;
@@ -13,11 +13,11 @@ const LINE: i64 = 16;
 
 pub(crate) fn write(
     chart: &Chart,
+    scene: &Scene,
     out: &mut Vec<u8>,
     indent: u8,
     scheme: &'static Scheme,
 ) -> Result<(), Error> {
-    let scene = asm_layout::layout(chart);
     let states = chart.states.len();
     let mut desc = format!("{states} {}", if states == 1 { "state" } else { "states" });
     for state in &chart.states {
@@ -257,13 +257,7 @@ wait:
   > idle
 ";
         let mut out = Vec::new();
-        write(
-            &crate::asm::parse(source).unwrap(),
-            &mut out,
-            0,
-            &scheme::LIGHT,
-        )
-        .unwrap();
+        crate::render_themed(source, &mut out, 0, &scheme::LIGHT).unwrap();
         let svg = String::from_utf8(out).unwrap();
         assert!(svg.contains("class=\"tgw asm\""));
         assert!(svg.contains(">req=1<"));
