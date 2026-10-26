@@ -9,7 +9,7 @@ use std::thread;
 use gpui_kit::{
     div, img, px, rgb, size, App, AppContext, Bounds, Context, DevicePixels, FocusHandle,
     ImageSource, InteractiveElement, IntoElement, KeyBinding, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, QuitMode, Render, RenderImage, ScrollWheelEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, QuitMode, Render, RenderImage, ScrollEvent,
     Styled, SvgSize, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 
@@ -68,9 +68,17 @@ fn launch(job: Job, cx: &mut App) -> Result<(), String> {
     gpui_kit::init(cx);
     cx.set_quit_mode(QuitMode::LastWindowClosed);
     cx.bind_keys([
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-w", Quit, None),
-        KeyBinding::new("secondary-shift-l", CycleScheme, None),
+        KeyBinding::load("secondary-q", Box::new(Quit), None, false, None, cx).unwrap(),
+        KeyBinding::load("secondary-w", Box::new(Quit), None, false, None, cx).unwrap(),
+        KeyBinding::load(
+            "secondary-shift-l",
+            Box::new(CycleScheme),
+            None,
+            false,
+            None,
+            cx,
+        )
+        .unwrap(),
     ]);
     cx.on_action(|_: &Quit, cx| cx.quit());
     #[cfg(target_os = "macos")]
@@ -564,7 +572,7 @@ impl Viewer {
         })
     }
 
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(layout) = self.layout else {
             return;
         };
@@ -730,7 +738,7 @@ impl Render for Viewer {
                 window.remove_window();
             })
             .on_action(cx.listener(|view, _: &CycleScheme, _, cx| view.cycle_scheme(cx)))
-            .on_scroll_wheel(cx.listener(Self::on_wheel))
+            .on_scroll(cx.listener(Self::on_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))

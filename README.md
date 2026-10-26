@@ -765,7 +765,7 @@ Calls are blocking: the timeout bounds waiting for an update, not reading a file
 
 ### Open the native viewer from Rust
 
-Enable `features = ["view"]` on the dependency (`view` includes `watch`) and install the [platform dependencies](#platforms). **Also copy the complete `[patch.crates-io]` block from this revision's [Cargo.toml](Cargo.toml) into your application's workspace-root manifest.** Cargo does not inherit dependency patches; these five pinned GPUI Fast patches are required for the viewer. Renderer-only and watcher-only applications do not need them.
+Enable `features = ["view"]` on the dependency (`view` includes `watch`) and install the [platform dependencies](#platforms). GPUI Kit selects GPUI Fast through its `gpui-fast` feature; no workspace-level dependency patches are needed.
 
 ```rust
 fn main() -> Result<(), String> {
@@ -843,7 +843,7 @@ This benchmark compares one-shot rendering with warmed retained layouts for timi
 | `cargo build --release --no-default-features --features watch` | Renderer and `--watch`, no GUI libraries |
 | `cargo build --release --no-default-features` | Renderer only, no dependencies |
 
-`tgw --help` says when a flag is missing from the build. The window uses [GPUI Fast](https://github.com/longbridge/gpui-fast) through GPUI Kit. `Cargo.toml` patches Kit's `gpui-pre-*` dependencies to a pinned fork revision whose compatibility shims match Kit 0.7.0's snapshot version (0.3.7). When upgrading Kit, update all five patches together to a fork revision with matching shim versions, then regenerate `Cargo.lock`. `rust-toolchain.toml` pins the compiler.
+`tgw --help` says when a flag is missing from the build. The window uses [GPUI Fast](https://github.com/longbridge/gpui-fast) through GPUI Kit 0.8.1's `gpui-fast` feature, with GPUI Fast 0.1.12 resolved in `Cargo.lock`. When upgrading Kit, regenerate `Cargo.lock` and verify the viewer with the selected backend. `rust-toolchain.toml` pins the compiler.
 
 The release workflow builds and tests all three native targets with default features and `--locked`. Run the **Release** workflow with a new tag such as `v0.1.0`, or push a `v*` tag; the tag must match the package version in `Cargo.toml`. Only after all targets pass does it publish the archives and checksums to GitHub Releases. A manual run creates its tag at the tested commit when publishing. Desktop-only viewer tests remain opt-in; the automated release tests exercise rendering and file watching, and the packager smoke-tests the copied executable outside the source tree.
 

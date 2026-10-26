@@ -21,18 +21,9 @@ view = [
 ]
 
 [dependencies]
-gpui-kit = { version = "=0.7.0", optional = true, default-features = false }
+gpui-kit = { version = "=0.8.1", optional = true, default-features = false, features = ["gpui-fast"] }
 image = { version = "0.25", optional = true, default-features = false, features = ["png", "ico"] }
 notify = { version = "8", optional = true }
-
-# GPUI Kit 0.7.0 pins snapshot 0.3.7. Keep the fork's compatibility shims at
-# that version so Kit and the viewer share the same GPUI types.
-[patch.crates-io]
-gpui-pre = { git = "https://github.com/longbridge/gpui-fast", rev = "1b381adb68a6e5a4550f73b0cd29a231ce6c7281" }
-gpui-pre-platform = { git = "https://github.com/longbridge/gpui-fast", rev = "1b381adb68a6e5a4550f73b0cd29a231ce6c7281" }
-gpui-pre-macros = { git = "https://github.com/longbridge/gpui-fast", rev = "1b381adb68a6e5a4550f73b0cd29a231ce6c7281" }
-gpui-pre-sum-tree = { git = "https://github.com/longbridge/gpui-fast", rev = "1b381adb68a6e5a4550f73b0cd29a231ce6c7281" }
-gpui-pre-web = { git = "https://github.com/longbridge/gpui-fast", rev = "1b381adb68a6e5a4550f73b0cd29a231ce6c7281" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
