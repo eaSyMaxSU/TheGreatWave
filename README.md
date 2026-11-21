@@ -257,7 +257,7 @@ The wave symbols are `p n P N h l H L 0 1 x d u z = 2-9`.
 | --- | --- |
 | `p` `n` | Clock, rising or falling. |
 | `P` `N` | The same clocks, with an arrow on the edge. |
-| `h` `l` `H` `L` `0` `1` | High and low levels. `H` and `L` carry an arrow. |
+| `h` `l` `H` `L` `0` `1` | High and low levels. Consecutive `0`s or consecutive `1`s stay flat. `H` and `L` carry an arrow. |
 | `x` | Unknown. |
 | `d` `u` | Weak low and weak high, drawn dashed. |
 | `z` | High impedance, a line at mid level. |

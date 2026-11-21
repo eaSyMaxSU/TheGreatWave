@@ -269,9 +269,7 @@ fn draw_soft(paint: &mut Paint, prev: u8, next: u8, x: i64) {
             line_band(paint, x, y, dash, "url(#xh)");
         }
         (End::Line { y: y1, dash: d1 }, End::Line { y: y2, dash: d2 }) => {
-            if y1 == y2 && !d1 && !d2 && (y1 == 0 || y1 == YS) {
-                bump(paint, x, y1);
-            } else if y1 == y2 {
+            if y1 == y2 {
                 hline(paint, x, XS, y1, d1 || d2);
             } else {
                 slope(paint, x, y1, y2, d1 || d2);
@@ -379,17 +377,6 @@ fn slope(paint: &mut Paint, x: i64, y1: i64, y2: i64, dash: bool) {
         cmd_m(body, x, y1);
         cmd_l(body, x + 3, y1);
         cmd_l(body, x + 9, y2);
-        cmd_h(body, x + XS);
-    });
-}
-
-fn bump(paint: &mut Paint, x: i64, y: i64) {
-    let mid = if y == 0 { 10 } else { y - 10 };
-    stroke(paint, false, |body| {
-        cmd_m(body, x, y);
-        cmd_l(body, x + 3, y);
-        cmd_l(body, x + 6, mid);
-        cmd_l(body, x + 9, y);
         cmd_h(body, x + XS);
     });
 }
