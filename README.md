@@ -383,16 +383,17 @@ A cycle header is `N:` at column 0. Numbers start at 0, increase, and have no le
 | Line | Unit |
 | --- | --- |
 | `+ a b -> s0` | Adder. |
+| `- raw pivot -> delta` | Subtractor. Draws `raw − pivot` and counts toward the same resource as addition. |
 | `* e f -> p` | Multiplier. |
 | `/ t n -> y` | Divider. |
 
 The two operands are names or integer constants, including negatives (`-2`). The name after `->` is the result. `!N` keeps that unit busy for N cycles, this cycle and the next N−1, and the usage count of each of those cycles includes it. Its card spans those bands, with a dashed line at each clock edge it crosses and `N cycles` in its corner. Omit `!N` when the unit lasts one cycle. `!1` is accepted and `--convert` drops it. `--convert` writes `!N` only when N is not 1, and it prints every cycle header from 0 through the last busy cycle, including gaps and the empty tail of a multi-cycle unit.
 
-A name that is not yet a result is a primary input (`a`, `b`, `n` in the example). A result becomes readable at cycle `start + N`. Using it earlier, or using a result as its own operand, is an error: `result "s0" is not ready until cycle K; results are ...`. Defining the same result twice is `duplicate result "s0"`. A token in the operand position that is `+`, `*`, `/`, `->`, or starts with `!` is an unknown operand, and the message lists the results defined so far.
+A name that is not yet a result is a primary input (`a`, `b`, `n` in the example). A result becomes readable at cycle `start + N`. Using it earlier, or using a result as its own operand, is an error: `result "s0" is not ready until cycle K; results are ...`. Defining the same result twice is `duplicate result "s0"`. An unquoted operand that is `+`, `-`, `*`, `/`, `->`, or starts with `!` is an unknown operand, and the message lists the results defined so far.
 
-Each band has its cycle number in the left gutter and a usage column on the right: `+a`, `×m`, and `÷d` count cards of that kind whose lifetime covers the cycle, including a unit that started earlier and is still busy. A nonzero count is a pill in that kind's colour; a zero is greyed out. The usage is computed. Do not write it in the file.
+Each band has its cycle number in the left gutter and a usage column on the right: `+a`, `×m`, and `÷d` count busy adders, multipliers, and dividers, including units started in earlier cycles. If the schedule contains subtraction, the first count is labeled `±` and includes both adds and subtracts. A nonzero count is a pill in that unit's colour; a zero is greyed out. The usage is computed. Do not write it in the file.
 
-A card is coloured by its unit: blue for an adder, violet for a multiplier, orange for a divider. It shows the operation glyph, the expression (`a + b`, `s0 × s1`, `t ÷ n`), and `→` the result.
+A card is coloured by its unit: blue for addition and subtraction, violet for multiplication, orange for division. It shows the operation glyph, the expression (`a + b`, `raw − pivot`, `s0 × s1`, `t ÷ n`), and `→` the result.
 
 A result used later is a wire in the producer's colour from the bottom of its card to an arrowhead on that operand's port: the left operand enters a third of the way across the consumer, the right operand two thirds. In the routing zone under each row of cards, every result gets its own horizontal track. A value read more than one cycle later drops through its own lane in the gap beside the consumer, so no two wires share a run and no wire passes through a card. A small square marks each clock edge a wire crosses: one register per cycle the value is held. A dot marks where one result branches to several readers. A result that never appears again is a live-out: an arrow under its card ends in a pill with its name.
 

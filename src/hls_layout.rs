@@ -52,7 +52,7 @@ pub(crate) struct Band {
     pub y: i64,
     pub h: i64,
     pub cycle: u32,
-    /// Busy adders, multipliers, and dividers in this cycle.
+    /// Busy add/sub units, multipliers, and dividers in this cycle.
     pub counts: [u32; 3],
     /// Vertical centre of the card row.
     pub row: i64,
@@ -125,6 +125,7 @@ struct Link {
 pub(crate) fn symbol(kind: Kind) -> &'static str {
     match kind {
         Kind::Add => "+",
+        Kind::Sub => "−",
         Kind::Mul => "\u{d7}",
         Kind::Div => "\u{f7}",
     }
@@ -448,7 +449,7 @@ pub(crate) fn cover(schedule: &Schedule, cycle: u32) -> [u32; 3] {
 
 pub(crate) fn kind_index(kind: Kind) -> usize {
     match kind {
-        Kind::Add => 0,
+        Kind::Add | Kind::Sub => 0,
         Kind::Mul => 1,
         Kind::Div => 2,
     }

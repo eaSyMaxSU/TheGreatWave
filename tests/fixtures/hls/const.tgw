@@ -1,5 +1,8 @@
 @hls
 0:
   + a 1 -> s
+  - raw pivot -> delta !2
 1:
   * s -2 -> p
+2:
+  / delta p -> q

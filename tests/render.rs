@@ -641,6 +641,12 @@ fn hls_edge_cases_render_and_round_trip() {
     assert!(divider.contains(">\u{f7}1</text>"), "{divider}");
     assert!(schedule.contains(">+2</text>"), "{schedule}");
     assert!(schedule.contains(">3 cycles</text>"), "{schedule}");
+
+    let mixed = render_fixture("hls/const");
+    assert!(mixed.contains(">−</text>") && mixed.contains(">raw − pivot</text>"));
+    for count in ["±2", "±1", "±0"] {
+        assert_eq!(mixed.matches(&format!(">{count}</text>")).count(), 1);
+    }
 }
 
 #[test]
@@ -660,6 +666,8 @@ fn hls_edge_cases_are_errors() {
             "duplicate result",
         ),
         ("@hls\n0:\n  + a -> -> s\n", "unknown operand"),
+        ("@hls\n0:\n  - a - -> s\n", "unknown operand"),
+        ("@hls\n0:\n  % a b -> s\n", "operators are +, -, *, /"),
         (
             "@hls\n1:\n  + a b -> s\n0:\n  + c d -> t\n",
             "must increase",

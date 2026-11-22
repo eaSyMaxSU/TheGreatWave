@@ -18,6 +18,7 @@ const MAX_OPS: usize = 256;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Add,
+    Sub,
     Mul,
     Div,
 }
@@ -26,6 +27,7 @@ impl Kind {
     pub(crate) fn symbol(self) -> char {
         match self {
             Kind::Add => '+',
+            Kind::Sub => '-',
             Kind::Mul => '*',
             Kind::Div => '/',
         }
@@ -274,12 +276,13 @@ fn parse_op(text: &str, at: usize, earlier: &[Op]) -> Result<Op, Error> {
     let symbol = chars.next().unwrap_or(' ');
     let kind = match symbol {
         '+' => Kind::Add,
+        '-' => Kind::Sub,
         '*' => Kind::Mul,
         '/' => Kind::Div,
         _ => {
             return Err(err(
                 at,
-                &format!("unknown operator \"{symbol}\"; operators are +, *, /"),
+                &format!("unknown operator \"{symbol}\"; operators are +, -, *, /"),
             ))
         }
     };
@@ -329,7 +332,9 @@ fn parse_op(text: &str, at: usize, earlier: &[Op]) -> Result<Op, Error> {
 }
 
 fn operand(token: &str, quoted: bool, at: usize, earlier: &[Op]) -> Result<Operand, Error> {
-    if !quoted && (token == "->" || token.starts_with('!') || matches!(token, "+" | "*" | "/")) {
+    if !quoted
+        && (token == "->" || token.starts_with('!') || matches!(token, "+" | "-" | "*" | "/"))
+    {
         return Err(err(
             at,
             &format!(
@@ -512,7 +517,7 @@ fn write_result(out: &mut String, name: &str) {
 }
 
 fn name_needs_quotes(name: &str) -> bool {
-    if name.is_empty() || parse_const(name).is_some() {
+    if name.is_empty() || name == "-" || parse_const(name).is_some() {
         return true;
     }
     name.chars().any(|c| {

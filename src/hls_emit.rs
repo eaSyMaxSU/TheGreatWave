@@ -42,7 +42,7 @@ pub(crate) fn write(
 
 pub(crate) fn ink(kind: Kind, scheme: &Scheme) -> &'static str {
     match kind {
-        Kind::Add => scheme.add_ink,
+        Kind::Add | Kind::Sub => scheme.add_ink,
         Kind::Mul => scheme.mul_ink,
         Kind::Div => scheme.div_ink,
     }
@@ -50,7 +50,7 @@ pub(crate) fn ink(kind: Kind, scheme: &Scheme) -> &'static str {
 
 pub(crate) fn fill(kind: Kind, scheme: &Scheme) -> &'static str {
     match kind {
-        Kind::Add => scheme.add_fill,
+        Kind::Add | Kind::Sub => scheme.add_fill,
         Kind::Mul => scheme.mul_fill,
         Kind::Div => scheme.div_fill,
     }
@@ -81,12 +81,18 @@ fn paint(scene: &Scene, out: &mut Vec<u8>, scheme: &Scheme) {
         }
         draw::rect(out, 0, bottom, width, 1, 0, scheme.rule);
     }
+    let has_sub = scene.units.iter().any(|unit| unit.kind == Kind::Sub);
     for band in &scene.bands {
         cycle_badge(out, band.cycle, band.row, scheme);
         for (index, kind) in KINDS.into_iter().enumerate() {
             let count = band.counts[index];
             let x = scene.usage_x + index as i64 * (scene.cell_w + 4);
-            let label = format!("{}{count}", symbol(kind));
+            let glyph = if kind == Kind::Add && has_sub {
+                "±"
+            } else {
+                symbol(kind)
+            };
+            let label = format!("{glyph}{count}");
             let center = x + scene.cell_w / 2;
             if count > 0 {
                 draw::framed(
